@@ -1,0 +1,41 @@
+{
+  "name": "nicerp",
+  "version": "0.2.0",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22.12.0 <23"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web \"npm run dev -w @nicerp/api\" \"npm run dev -w @nicerp/web\"",
+    "build": "npm run db:generate && npm run build -w @nicerp/api && npm run build -w @nicerp/web",
+    "typecheck": "npm run db:generate && npm run typecheck --workspaces",
+    "db:up": "docker compose up -d --wait postgres",
+    "db:down": "docker compose down",
+    "db:generate": "npm run db:generate -w @nicerp/api",
+    "db:push": "npm run db:push -w @nicerp/api",
+    "test": "npm run test -w @nicerp/api",
+    "test:smoke": "node scripts/smoke.mjs",
+    "test:business": "npm run db:generate && npm run build -w @nicerp/api && node --env-file=apps/api/.env scripts/test-business.mjs",
+    "test:browser": "npm run build -w @nicerp/web && BROWSER_TEST=1 npm run test:business",
+    "format": "prettier --write \"apps/*/src/**/*.{ts,tsx,css}\" \"apps/api/test/*.mjs\" \"scripts/*.mjs\""
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "concurrently": "^9.2.1",
+    "prettier": "^3.9.9"
+  },
+  "overrides": {
+    "@nestjs/swagger": {
+      "js-yaml": "5.4.3"
+    },
+    "@prisma/config": {
+      "deepmerge-ts": "8.0.2"
+    },
+    "prisma": {
+      "mysql2": "3.24.5"
+    }
+  }
+}

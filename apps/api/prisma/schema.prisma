@@ -1,0 +1,412 @@
+generator client {
+  provider = "prisma-client"
+  output = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+datasource db {
+  provider = "postgresql"
+}
+enum Role {
+  ADMIN
+  MANAGER
+  SALES
+  PURCHASING
+  WAREHOUSE
+  FINANCE
+  VIEWER
+}
+enum DocumentKind {
+  QUOTE
+  SALE
+  PURCHASE
+  INVOICE
+  BILL
+}
+enum DocumentStatus {
+  DRAFT
+  CONFIRMED
+  PARTIAL
+  FULFILLED
+  VOID
+}
+model Company {
+  id String @id @default(uuid()) @db.Uuid
+  code String @unique @db.VarChar(32)
+  name String @db.VarChar(200)
+  currency String @default("SGD") @db.VarChar(3)
+  address String @default("")
+  taxNumber String @default("")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  memberships Membership[]
+  products Product[]
+  partners Partner[]
+  warehouses Warehouse[]
+  documents Document[]
+  accounts BankAccount[]
+  posts Post[]
+  lookups Lookup[]
+  audits AuditLog[]
+  supplierPrices SupplierPrice[]
+  bankOperations BankOperation[]
+  counters Counter[]
+  operations StockOperation[]
+  @@map("companies")
+}
+model User {
+  id String @id @default(uuid()) @db.Uuid
+  email String @unique
+  name String
+  passwordHash String
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  memberships Membership[]
+  sessions Session[]
+  @@map("users")
+}
+model Membership {
+  userId String @db.Uuid
+  companyId String @db.Uuid
+  role Role @default(VIEWER)
+  user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+  company Company @relation(fields:[companyId],references:[id],onDelete:Cascade)
+  @@id([userId,companyId])
+  @@map("memberships")
+}
+model Session {
+  id String @id
+  userId String @db.Uuid
+  expiresAt DateTime
+  user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+  @@index([expiresAt])
+  @@map("sessions")
+}
+model Lookup {
+  id String @id @default(uuid()) @db.Uuid
+  companyId String @db.Uuid
+  kind String
+  name String
+  company Company @relation(fields:[companyId],references:[id])
+  @@unique([companyId,kind,name])
+  @@map("lookups")
+}
+model Product {
+  id String @id @default(uuid()) @db.Uuid
+  companyId String @db.Uuid
+  sku String
+  name String
+  type String @default("STOCK")
+  unit String @default("件")
+  brandId String?
+  categoryId String?
+  seriesId String?
+  relatedNumbers String[] @default([])
+  model String @default("")
+  sourceTag String @default("")
+  saleEnabled Boolean @default(true)
+  purchaseEnabled Boolean @default(true)
+  salePrice Decimal @default(0) @db.Decimal(18,4)
+  costPrice Decimal @default(0) @db.Decimal(18,4)
+  taxRate Decimal @default(0) @db.Decimal(7,4)
+  description String @default("")
+  imageUrls String[] @default([])
+  published Boolean @default(false)
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  company Company @relation(fields:[companyId],references:[id])
+  components ProductComponent[] @relation("KitParent")
+  usedIn ProductComponent[] @relation("KitPart")
+  stocks StockBalance[]
+  movements StockMovement[]
+  lines DocumentLine[]
+  supplierPrices SupplierPrice[]
+  @@unique([companyId,sku])
+  @@index([relatedNumbers], type: Gin)
+  @@map("products")
+}
+model ProductComponent {
+  kitId String @db.Uuid
+  productId String @db.Uuid
+  quantity Decimal @db.Decimal(18,4)
+  kit Product @relation("KitParent",fields:[kitId],references:[id],onDelete:Cascade)
+  product Product @relation("KitPart",fields:[productId],references:[id])
+  @@id([kitId,productId])
+  @@map("product_components")
+}
+model Partner {
+  id String @id @default(uuid()) @db.Uuid
+  companyId String @db.Uuid
+  code String
+  name String
+  type String @default("CUSTOMER")
+  contact String @default("")
+  email String @default("")
+  phone String @default("")
+  address String @default("")
+  taxNumber String @default("")
+  notes String @default("")
+  active Boolean @default(true)
+  company Company @relation(fields:[companyId],references:[id])
+  documents Document[]
+  contacts Contact[]
+  supplierPrices SupplierPrice[]
+  @@unique([companyId,code])
+  @@map("partners")
+}
+model Contact {
+  id String @id @default(uuid()) @db.Uuid
+  partnerId String @db.Uuid
+  name String
+  role String @default("")
+  email String @default("")
+  phone String @default("")
+  address String @default("")
+  notes String @default("")
+  active Boolean @default(true)
+  partner Partner @relation(fields:[partnerId],references:[id])
+  @@index([partnerId])
+  @@map("contacts")
+}
+model SupplierPrice {
+  id String @id @default(uuid()) @db.Uuid
+  companyId String @db.Uuid
+  productId String @db.Uuid
+  partnerId String @db.Uuid
+  supplierSku String @default("")
+  currency String @db.VarChar(3)
+  exchangeRate Decimal @default(1) @db.Decimal(18,6)
+  unitPrice Decimal @db.Decimal(18,4)
+  minQuantity Decimal @default(1) @db.Decimal(18,4)
+  discountRate Decimal @default(0) @db.Decimal(7,4)
+  leadDays Int @default(0)
+  validUntil DateTime? @db.Date
+  active Boolean @default(true)
+  company Company @relation(fields:[companyId],references:[id])
+  product Product @relation(fields:[productId],references:[id])
+  partner Partner @relation(fields:[partnerId],references:[id])
+  @@unique([companyId,productId,partnerId,currency,minQuantity])
+  @@map("supplier_prices")
+}
+model Warehouse {
+  id String @id @default(uuid()) @db.Uuid
+  companyId String @db.Uuid
+  code String
+  name String
+  address String @default("")
+  active Boolean @default(true)
+  company Company @relation(fields:[companyId],references:[id])
+  stocks StockBalance[]
+  operations StockOperation[]
+  @@unique([companyId,code])
+  @@map("warehouses")
+}
+model StockBalance {
+  warehouseId String @db.Uuid
+  productId String @db.Uuid
+  quantity Decimal @default(0) @db.Decimal(18,4)
+  warehouse Warehouse @relation(fields:[warehouseId],references:[id])
+  product Product @relation(fields:[productId],references:[id])
+  @@id([warehouseId,productId])
+  @@map("stock_balances")
+}
+model StockOperation {
+  id String @id @default(uuid()) @db.Uuid
+  companyId String @db.Uuid
+  warehouseId String @db.Uuid
+  documentId String? @db.Uuid
+  requestKey String
+  fingerprint String
+  lineQuantities Json
+  kind String
+  note String @default("")
+  createdAt DateTime @default(now())
+  company Company @relation(fields:[companyId],references:[id])
+  warehouse Warehouse @relation(fields:[warehouseId],references:[id])
+  document Document? @relation(fields:[documentId],references:[id])
+  movements StockMovement[]
+  @@unique([companyId,requestKey])
+  @@map("stock_operations")
+}
+model StockMovement {
+  id String @id @default(uuid()) @db.Uuid
+  operationId String @db.Uuid
+  productId String @db.Uuid
+  quantity Decimal @db.Decimal(18,4)
+  balanceAfter Decimal @db.Decimal(18,4)
+  operation StockOperation @relation(fields:[operationId],references:[id])
+  product Product @relation(fields:[productId],references:[id])
+  @@map("stock_movements")
+}
+model Counter {
+  companyId String @db.Uuid
+  kind String
+  value Int @default(0)
+  company Company @relation(fields:[companyId],references:[id])
+  @@id([companyId,kind])
+  @@map("counters")
+}
+model Document {
+  id String @id @default(uuid()) @db.Uuid
+  companyId String @db.Uuid
+  kind DocumentKind
+  number String
+  status DocumentStatus @default(DRAFT)
+  partnerId String @db.Uuid
+  partnerSnapshot Json
+  sourceId String? @db.Uuid
+  source Document? @relation("DocSource",fields:[sourceId],references:[id])
+  children Document[] @relation("DocSource")
+  currency String @db.VarChar(3)
+  exchangeRate Decimal @db.Decimal(18,6)
+  discountRate Decimal @default(0) @db.Decimal(7,4)
+  subtotal Decimal @db.Decimal(18,2)
+  taxTotal Decimal @db.Decimal(18,2)
+  total Decimal @db.Decimal(18,2)
+  paidAmount Decimal @default(0) @db.Decimal(18,2)
+  date DateTime @db.Date
+  dueDate DateTime? @db.Date
+  validUntil DateTime? @db.Date
+  deliveryDate DateTime? @db.Date
+  customerReference String @default("")
+  paymentTerms String @default("")
+  paymentMethod String @default("")
+  shippingMethod String @default("")
+  incotermLocation String @default("")
+  privateNotes String @default("")
+  quoteDecision String @default("PENDING")
+  decisionReason String @default("")
+  incoterm String @default("")
+  notes String @default("")
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  company Company @relation(fields:[companyId],references:[id])
+  partner Partner @relation(fields:[partnerId],references:[id])
+  lines DocumentLine[]
+  operations StockOperation[]
+  payments Payment[]
+  @@unique([companyId,number])
+  @@index([companyId,kind,date])
+  @@map("documents")
+}
+model DocumentLine {
+  id String @id @default(uuid()) @db.Uuid
+  documentId String @db.Uuid
+  position Int
+  kind String @default("ITEM")
+  freeText Boolean @default(false)
+  level Int @default(1)
+  hidden Boolean @default(false)
+  productId String? @db.Uuid
+  description String
+  quantity Decimal @db.Decimal(18,4)
+  unitPrice Decimal @db.Decimal(18,4)
+  unitCost Decimal @db.Decimal(18,4)
+  discountRate Decimal @db.Decimal(7,4)
+  taxRate Decimal @db.Decimal(7,4)
+  net Decimal @db.Decimal(18,2)
+  tax Decimal @db.Decimal(18,2)
+  total Decimal @db.Decimal(18,2)
+  fulfilled Decimal @default(0) @db.Decimal(18,4)
+  stockParts Json
+  document Document @relation(fields:[documentId],references:[id],onDelete:Cascade)
+  product Product? @relation(fields:[productId],references:[id])
+  @@unique([documentId,position])
+  @@map("document_lines")
+}
+model BankAccount {
+  id String @id @default(uuid()) @db.Uuid
+  companyId String @db.Uuid
+  name String
+  currency String @db.VarChar(3)
+  openingBalance Decimal @default(0) @db.Decimal(18,2)
+  active Boolean @default(true)
+  type String @default("BANK")
+  bankName String @default("")
+  accountNumber String @default("")
+  iban String @default("")
+  bic String @default("")
+  company Company @relation(fields:[companyId],references:[id])
+  payments Payment[]
+  entries BankEntry[]
+  @@unique([companyId,name])
+  @@map("bank_accounts")
+}
+model BankOperation {
+  id String @id @default(uuid()) @db.Uuid
+  companyId String @db.Uuid
+  kind String
+  requestKey String
+  fingerprint String
+  reversedAt DateTime?
+  createdAt DateTime @default(now())
+  company Company @relation(fields:[companyId],references:[id])
+  entries BankEntry[]
+  @@unique([companyId,requestKey])
+  @@map("bank_operations")
+}
+model BankEntry {
+  id String @id @default(uuid()) @db.Uuid
+  operationId String @db.Uuid
+  accountId String @db.Uuid
+  amount Decimal @db.Decimal(18,2)
+  date DateTime @db.Date
+  reference String @default("")
+  category String @default("")
+  note String @default("")
+  statementNumber String @default("")
+  reconciledAt DateTime?
+  operation BankOperation @relation(fields:[operationId],references:[id])
+  account BankAccount @relation(fields:[accountId],references:[id])
+  @@index([accountId,date])
+  @@map("bank_entries")
+}
+model Payment {
+  id String @id @default(uuid()) @db.Uuid
+  documentId String @db.Uuid
+  accountId String @db.Uuid
+  requestKey String @unique
+  fingerprint String
+  amount Decimal @db.Decimal(18,2)
+  direction String
+  date DateTime @db.Date
+  reference String @default("")
+  reversedAt DateTime?
+  statementNumber String @default("")
+  reconciledAt DateTime?
+  createdAt DateTime @default(now())
+  document Document @relation(fields:[documentId],references:[id])
+  account BankAccount @relation(fields:[accountId],references:[id])
+  @@map("payments")
+}
+model Post {
+  id String @id @default(uuid()) @db.Uuid
+  companyId String @db.Uuid
+  title String
+  slug String
+  excerpt String @default("")
+  content String
+  coverUrl String @default("")
+  status String @default("DRAFT")
+  publishedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  company Company @relation(fields:[companyId],references:[id])
+  @@unique([companyId,slug])
+  @@map("posts")
+}
+model AuditLog {
+  id String @id @default(uuid()) @db.Uuid
+  companyId String @db.Uuid
+  actorId String
+  actorName String
+  action String
+  resource String
+  recordId String
+  detail String
+  createdAt DateTime @default(now())
+  company Company @relation(fields:[companyId],references:[id])
+  @@index([companyId,createdAt])
+  @@map("audit_logs")
+}
