@@ -1,4 +1,5 @@
 'use client';
+import { useLanguage } from '@/components/locale-provider';
 import { useState } from 'react';
 import { request, requestKey, text, type Bootstrap, type Row } from '@/lib/client';
 import { fieldsFor } from '@/lib/forms';
@@ -17,11 +18,20 @@ export default function MasterForm({
   close: () => void;
   saved: () => void;
 }) {
+  const { t } = useLanguage();
   const fields = fieldsFor(resource, bootstrap, !!record),
     [busy, setBusy] = useState(false),
     [error, setError] = useState('');
-  const [parts, setParts] = useState<{ productId: string; quantity: string }[]>(
-    (record?.components ?? []) as { productId: string; quantity: string }[],
+  const [parts, setParts] = useState<
+    {
+      productId: string;
+      quantity: string;
+    }[]
+  >(
+    (record?.components ?? []) as {
+      productId: string;
+      quantity: string;
+    }[],
   );
   const [matchedProduct, setMatchedProduct] = useState({
     id: text(record?.productId),
@@ -54,7 +64,7 @@ export default function MasterForm({
     if (!body.password) delete body.password;
     try {
       if (fields.some((f) => f.type === 'product' && f.required) && !matchedProduct.id)
-        throw Error('请先匹配产品编号');
+        throw Error(t('请先匹配产品编号'));
       await request(
         resource === 'bank-transfer'
           ? 'erp/bank/transfer'
@@ -72,7 +82,7 @@ export default function MasterForm({
     }
   }
   return (
-    <Dialog title={record ? '编辑资料' : '新建资料'} close={() => !busy && close()} wide>
+    <Dialog title={record ? t('编辑资料') : t('新建资料')} close={() => !busy && close()} wide>
       <form onSubmit={submit} onChange={() => setKey(requestKey())}>
         <div className="form-grid">
           {fields.map((f) => {
@@ -83,12 +93,12 @@ export default function MasterForm({
                 className={['textarea', 'tags', 'parts'].includes(f.type ?? '') ? 'span-2' : ''}
               >
                 <span>
-                  {f.label}
+                  {t(f.label)}
                   {f.required && <em> *</em>}
                 </span>
                 {f.type === 'product' ? (
                   <ProductMatch
-                    label={f.label}
+                    label={t(f.label)}
                     usage="purchase"
                     selected={matchedProduct.name}
                     onSelect={(p) => setMatchedProduct({ id: p.id, name: `${p.sku} · ${p.name}` })}
@@ -100,7 +110,7 @@ export default function MasterForm({
                     {parts.map((p, i) => (
                       <div className="inline-fields" key={i}>
                         <ProductMatch
-                          label={`组成零件 ${i + 1}`}
+                          label={t('组成零件 {0}', { '0': i + 1 })}
                           usage="components"
                           selected={
                             p.productId
@@ -115,7 +125,7 @@ export default function MasterForm({
                           }
                         />
                         <input
-                          aria-label="组成数量"
+                          aria-label={t('组成数量')}
                           type="number"
                           min="0.0001"
                           step="0.0001"
@@ -133,7 +143,7 @@ export default function MasterForm({
                           type="button"
                           onClick={() => setParts(parts.filter((_, n) => n !== i))}
                         >
-                          移除
+                          {t('移除')}
                         </button>
                       </div>
                     ))}
@@ -141,20 +151,26 @@ export default function MasterForm({
                       type="button"
                       onClick={() => setParts([...parts, { productId: '', quantity: '1' }])}
                     >
-                      ＋ 添加零件
+                      {t('＋ 添加零件')}
                     </button>
                   </div>
                 ) : f.type === 'select' ? (
-                  <select name={f.key} defaultValue={text(v)} required={f.required}>
-                    <option value="">请选择</option>
+                  <select
+                    aria-label={t(f.label)}
+                    name={f.key}
+                    defaultValue={text(v)}
+                    required={f.required}
+                  >
+                    <option value="">{t('请选择')}</option>
                     {f.options?.map((o) => (
                       <option key={o.value} value={o.value}>
-                        {o.label}
+                        {/^[0-9a-f-]{36}$/i.test(o.value) ? o.label : t(o.label)}
                       </option>
                     ))}
                   </select>
                 ) : f.type === 'textarea' || f.type === 'tags' ? (
                   <textarea
+                    aria-label={t(f.label)}
                     name={f.key}
                     rows={f.key === 'content' ? 12 : 3}
                     defaultValue={Array.isArray(v) ? v.join('\n') : text(v)}
@@ -163,6 +179,7 @@ export default function MasterForm({
                 ) : (
                   <input
                     type={f.type ?? 'text'}
+                    aria-label={t(f.label)}
                     name={f.key}
                     defaultValue={f.type === 'date' ? text(v).slice(0, 10) : text(v)}
                     required={f.required}
@@ -171,18 +188,18 @@ export default function MasterForm({
                     autoComplete={f.type === 'password' ? 'new-password' : undefined}
                   />
                 )}{' '}
-                {f.hint && <small>{f.hint}</small>}
+                {f.hint && <small>{t(f.hint)}</small>}
               </label>
             );
           })}
         </div>
-        <ErrorMessage error={error} />
+        <ErrorMessage error={t(error)} />
         <div className="form-actions">
           <button type="button" onClick={close} disabled={busy}>
-            取消
+            {t('取消')}
           </button>
           <button className="primary" disabled={busy}>
-            {busy ? '保存中…' : '保存'}
+            {busy ? t('保存中…') : t('保存')}
           </button>
         </div>
       </form>

@@ -131,6 +131,7 @@ export function fieldsFor(resource: string, b: Bootstrap, editing = false): Fiel
         },
         { key: 'unit', label: '单位', default: '件' },
         { key: 'model', label: '型号' },
+        { key: 'countryOfOrigin', label: '原产地 (Country of Origin)' },
         {
           key: 'sourceTag',
           label: '货源标签',
@@ -156,6 +157,17 @@ export function fieldsFor(resource: string, b: Bootstrap, editing = false): Fiel
           type: 'number',
           default: '0',
         },
+        { key: 'weight', label: '重量 (kg)', type: 'number', default: '0' },
+        { key: 'length', label: '长度 (mm)', type: 'number', default: '0' },
+        { key: 'width', label: '宽度 (mm)', type: 'number', default: '0' },
+        { key: 'height', label: '高度 (mm)', type: 'number', default: '0' },
+        {
+          key: 'moq',
+          label: '最小起订量 (MOQ)',
+          type: 'number',
+          default: '1',
+          required: true,
+        },
         { key: 'taxRate', label: '默认税率 %', type: 'number', default: '0' },
         { key: 'relatedNumbers', label: '关联 / 替代零件号', type: 'tags', hint: '每行一个编号' },
         { key: 'description', label: '产品说明', type: 'textarea' },
@@ -171,7 +183,6 @@ export function fieldsFor(resource: string, b: Bootstrap, editing = false): Fiel
       ];
     case 'partners':
       return [
-        { key: 'code', label: '编号', required: true },
         name,
         {
           key: 'type',
@@ -186,6 +197,23 @@ export function fieldsFor(resource: string, b: Bootstrap, editing = false): Fiel
         { key: 'address', label: '地址', type: 'textarea' },
         { key: 'taxNumber', label: '税务编号' },
         { key: 'notes', label: '备注', type: 'textarea' },
+        active,
+      ];
+    case 'exchange-rates':
+      return [
+        {
+          key: 'currency',
+          label: '币种',
+          required: true,
+          hint: '三位币种代码，例如 USD、EUR',
+        },
+        {
+          key: 'rate',
+          label: '汇率（1 币种 = 本位币）',
+          type: 'number',
+          default: '1',
+          required: true,
+        },
         active,
       ];
     case 'lookups':
@@ -211,6 +239,13 @@ export function fieldsFor(resource: string, b: Bootstrap, editing = false): Fiel
       return [
         { key: 'code', label: '仓库编号', required: true },
         name,
+        {
+          key: 'type',
+          label: '仓库类型',
+          type: 'select',
+          options: options(['PHYSICAL', 'VIRTUAL']),
+          default: 'PHYSICAL',
+        },
         { key: 'address', label: '仓库地址', type: 'textarea' },
         active,
       ];
@@ -282,18 +317,18 @@ export function fieldsFor(resource: string, b: Bootstrap, editing = false): Fiel
       ];
     case 'users':
       return [
-        ...(editing
-          ? []
-          : [
-              { key: 'name', label: '姓名', required: true },
-              { key: 'email', label: '邮箱', type: 'email' as const, required: true },
+        { key: 'name', label: '姓名', required: true },
+        { key: 'email', label: '邮箱', type: 'email' as const, required: true },
+        ...(!editing
+          ? [
               {
                 key: 'password',
                 label: '初始密码',
                 type: 'password' as const,
                 hint: '新用户至少 12 位；已有用户留空，仅添加公司权限',
               },
-            ]),
+            ]
+          : []),
         {
           key: 'role',
           label: '公司角色',
@@ -305,9 +340,8 @@ export function fieldsFor(resource: string, b: Bootstrap, editing = false): Fiel
             'PURCHASING',
             'WAREHOUSE',
             'FINANCE',
-            'VIEWER',
           ]),
-          default: 'VIEWER',
+          default: 'SALES',
         },
         {
           key: 'active',

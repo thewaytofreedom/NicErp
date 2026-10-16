@@ -100,15 +100,26 @@ export class BankService {
           include: { entries: true },
         }),
       );
-      if (op.reversedAt) return op;
       if (op.entries.some((e) => e.reconciledAt))
         throw new ConflictException('请先取消对账，再冲销整笔操作');
-      const result = await tx.bankOperation.update({
-        where: { id: op.id },
-        data: { reversedAt: new Date() },
-      });
+      // 若流水来自登记收付款，一并冲销关联的收付款并恢复单据未付余额。
+      for (const entry of op.entries) {
+        if (!entry.paymentId) continue;
+        const payment = await tx.payment.findUnique({ where: { id: entry.paymentId } });
+        if (!payment) continue;
+        if (payment.reconciledAt)
+          throw new ConflictException('请先取消银行对账，再冲销付款');
+        await tx.document.update({
+          where: { id: payment.documentId },
+          data: { paidAmount: { decrement: payment.amount }, version: { increment: 1 } },
+        });
+        await tx.payment.delete({ where: { id: payment.id } });
+        await audit(tx, c, 'REVERSE', 'payments', payment.id);
+      }
+      await tx.bankEntry.deleteMany({ where: { operationId: op.id } });
+      await tx.bankOperation.delete({ where: { id: op.id } });
       await audit(tx, c, 'REVERSE', 'bank', op.id);
-      return result;
+      return { id: op.id };
     });
   }
   async reconcile(c: Context, raw: unknown) {
@@ -132,6 +143,9 @@ export class BankService {
         );
         if (entry.operation.reversedAt) throw new ConflictException('已冲销流水不能对账');
         await tx.bankEntry.update({ where: { id: entry.id }, data });
+        // 同步关联收付款的对账状态
+        if (entry.paymentId)
+          await tx.payment.update({ where: { id: entry.paymentId }, data });
       } else {
         const payment = await owned(
           await tx.payment.findFirst({
@@ -140,6 +154,9 @@ export class BankService {
         );
         if (payment.reversedAt) throw new ConflictException('已冲销付款不能对账');
         await tx.payment.update({ where: { id: payment.id }, data });
+        // 同步关联资金收支的对账状态
+        const entry = await tx.bankEntry.findUnique({ where: { paymentId: payment.id } });
+        if (entry) await tx.bankEntry.update({ where: { id: entry.id }, data });
       }
       await audit(
         tx,

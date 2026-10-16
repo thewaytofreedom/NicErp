@@ -24,9 +24,10 @@ import {
   date,
   type Input,
 } from '../common/input.js';
-import { permit, type Context } from '../common/context.js';
+import { canAccess, permit, type Context } from '../common/context.js';
 import { hashPassword } from '../auth/auth.service.js';
 import { Prisma } from '../generated/prisma/client.js';
+import { DocumentKind } from '../generated/prisma/enums.js';
 import { equivalentProductIds } from './product-matching.js';
 import { validateKitLinks, kitParts } from './kits.js';
 export async function owned<T>(value: T | null): Promise<T> {
@@ -37,9 +38,11 @@ export async function owned<T>(value: T | null): Promise<T> {
 export class CatalogService {
   constructor(private db: PrismaService) {}
   async bootstrap(c: Context) {
-    const where = { companyId: c.companyId };
-    const [company, products, partners, warehouses, accounts, lookups] = await Promise.all([
-      this.db.company.findUniqueOrThrow({ where: { id: c.companyId } }),
+    const where = { companyId: c.companyId },
+      partnerWhere = { ...where, ...(c.role === 'SALES' ? { createdById: c.userId } : {}) };
+    const [company, products, partners, warehouses, accounts, lookups, exchangeRates] =
+      await Promise.all([
+        this.db.company.findUniqueOrThrow({ where: { id: c.companyId } }),
       this.db.product.findMany({
         where: { ...where, active: true },
         orderBy: { sku: 'asc' },
@@ -47,35 +50,171 @@ export class CatalogService {
         include: { components: true },
       }),
       this.db.partner.findMany({
-        where: { ...where, active: true },
+        where: { ...partnerWhere, active: true },
         orderBy: { name: 'asc' },
         take: 1000,
       }),
-      this.db.warehouse.findMany({
+      (canAccess(c, 'inventory') || c.role === 'SALES') ? this.db.warehouse.findMany({
         where: { ...where, active: true },
         orderBy: { name: 'asc' },
         take: 1000,
-      }),
-      this.db.bankAccount.findMany({
+        select: { id: true, name: true, code: true, type: true, active: true },
+      }) : [],
+      (canAccess(c, 'finance') || c.role === 'SALES') ? this.db.bankAccount.findMany({
         where: { ...where, active: true },
         orderBy: { name: 'asc' },
         take: 1000,
-      }),
-      this.db.lookup.findMany({ where, orderBy: { name: 'asc' }, take: 1000 }),
-    ]);
-    return { company, products, partners, warehouses, accounts, lookups, role: c.role };
+        select: { id: true, name: true, currency: true, type: true, active: true },
+      }) : [],
+        this.db.lookup.findMany({ where, orderBy: { name: 'asc' }, take: 1000 }),
+        this.db.exchangeRate.findMany({
+          where: { ...where, active: true },
+          orderBy: { currency: 'asc' },
+          take: 1000,
+        }),
+      ]);
+    return {
+      company,
+      products: c.role === 'SALES'
+        ? products.map(({ costPrice: _costPrice, ...product }) => product)
+        : products,
+      partners,
+      warehouses,
+      accounts,
+      lookups,
+      exchangeRates,
+      role: c.role,
+    };
   }
   async post(c: Context, recordId: string) {
+    permit(c, 'content');
     id({ recordId }, 'recordId');
     return owned(await this.db.post.findFirst({ where: { id: recordId, companyId: c.companyId } }));
   }
+  async partnerProfile(c: Context, partnerId: string) {
+    id({ partnerId }, 'partnerId');
+    return atomic(this.db, async (tx) => {
+      const partner = await owned(
+        await tx.partner.findFirst({
+          where: {
+            id: partnerId,
+            companyId: c.companyId,
+            ...(c.role === 'SALES' ? { createdById: c.userId } : {}),
+          },
+        }),
+      );
+      const company = await tx.company.findUniqueOrThrow({ where: { id: c.companyId } });
+      const documents = await tx.document.findMany({
+        where: {
+          companyId: c.companyId,
+          partnerId,
+          ...(c.role === 'SALES' ? { kind: { in: ['QUOTE', 'SALE', 'INVOICE'] } } : {}),
+        },
+        orderBy: { date: 'desc' },
+      });
+      const invoices = documents.filter(
+        (d) => ['INVOICE', 'BILL'].includes(d.kind) && !['DRAFT', 'VOID'].includes(d.status),
+      );
+      let totalInvoiced = new Prisma.Decimal(0),
+        totalPaid = new Prisma.Decimal(0),
+        receivable = new Prisma.Decimal(0),
+        payable = new Prisma.Decimal(0);
+      const rows = invoices.map((d) => {
+        const total = d.total.mul(d.exchangeRate),
+          paid = d.paidAmount.mul(d.exchangeRate),
+          outstanding = total.minus(paid);
+        totalInvoiced = totalInvoiced.plus(total);
+        totalPaid = totalPaid.plus(paid);
+        if (d.kind === 'INVOICE') receivable = receivable.plus(outstanding);
+        else payable = payable.plus(outstanding);
+        return {
+          id: d.id,
+          number: d.number,
+          kind: d.kind,
+          status: d.status,
+          date: d.date,
+          dueDate: d.dueDate,
+          currency: d.currency,
+          total: d.total.toString(),
+          paidAmount: d.paidAmount.toString(),
+          outstanding: outstanding.toString(),
+        };
+      });
+      const operations = await tx.stockOperation.findMany({
+        where: {
+          companyId: c.companyId,
+          document: { partnerId },
+          kind: { in: ['SHIPMENT', 'SHIPMENT_RETURN', 'RECEIPT', 'RECEIPT_RETURN'] },
+        },
+        include: {
+          warehouse: { select: { name: true } },
+          document: { select: { id: true, number: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+      });
+      return {
+        partner,
+        documents: rows,
+        quotes: documents
+          .filter((d) => d.kind === 'QUOTE')
+          .map((d) => ({
+            id: d.id,
+            number: d.number,
+            status: d.status,
+            date: d.date,
+            validUntil: d.validUntil,
+            currency: d.currency,
+            total: d.total.toString(),
+            quoteDecision: d.quoteDecision,
+          })),
+        orders: documents
+          .filter((d) => ['SALE', 'PURCHASE'].includes(d.kind))
+          .map((d) => ({
+            id: d.id,
+            number: d.number,
+            kind: d.kind,
+            status: d.status,
+            date: d.date,
+            currency: d.currency,
+            total: d.total.toString(),
+          })),
+        shipments: operations.map((op) => ({
+          id: op.id,
+          kind: op.kind,
+          createdAt: op.createdAt,
+          warehouse: op.warehouse.name,
+          documentId: op.document?.id ?? null,
+          number: op.document?.number ?? '',
+          quantity: (op.lineQuantities as { quantity: string }[])
+            .reduce((sum, l) => sum.plus(l.quantity), new Prisma.Decimal(0))
+            .toString(),
+          note: op.note,
+        })),
+        summary: {
+          baseCurrency: company.currency,
+          totalInvoiced: totalInvoiced.toFixed(2),
+          totalPaid: totalPaid.toFixed(2),
+          receivable: receivable.toFixed(2),
+          payable: payable.toFixed(2),
+          outstanding: receivable.minus(payable).toFixed(2),
+        },
+      };
+    });
+  }
   async dashboard(c: Context) {
-    const companyId = c.companyId;
+    const companyId = c.companyId,
+      salesOnly = c.role === 'SALES',
+      partnerScope = salesOnly ? { createdById: c.userId } : {};
     const [products, partners, documents, recent] = await Promise.all([
       this.db.product.count({ where: { companyId, active: true } }),
-      this.db.partner.count({ where: { companyId, active: true } }),
+      this.db.partner.count({ where: { companyId, active: true, ...partnerScope } }),
       this.db.document.findMany({
-        where: { companyId, status: { notIn: ['DRAFT', 'VOID'] } },
+        where: {
+          companyId,
+          status: { notIn: ['DRAFT', 'VOID'] },
+          ...(salesOnly ? { kind: { in: ['QUOTE', 'SALE'] }, partner: partnerScope } : {}),
+        },
         select: {
           kind: true,
           status: true,
@@ -85,7 +224,11 @@ export class CatalogService {
           lines: { select: { kind: true, net: true, quantity: true, unitCost: true } },
         },
       }),
-      this.db.auditLog.findMany({ where: { companyId }, orderBy: { createdAt: 'desc' }, take: 8 }),
+      this.db.auditLog.findMany({
+        where: { companyId, ...(salesOnly ? { actorId: c.userId } : {}) },
+        orderBy: { createdAt: 'desc' },
+        take: 8,
+      }),
     ]);
     let receivable = new Prisma.Decimal(0),
       payable = new Prisma.Decimal(0),
@@ -108,14 +251,35 @@ export class CatalogService {
       openOrders: documents.filter(
         (d) => ['SALE', 'PURCHASE'].includes(d.kind) && d.status !== 'FULFILLED',
       ).length,
-      receivable: receivable.toFixed(2),
-      payable: payable.toFixed(2),
-      sales: sales.toFixed(2),
-      margin: margin.toFixed(2),
+      receivable: salesOnly ? null : receivable.toFixed(2),
+      payable: salesOnly ? null : payable.toFixed(2),
+      sales: salesOnly ? null : sales.toFixed(2),
+      margin: salesOnly ? null : margin.toFixed(2),
       recent,
     };
   }
   async read(c: Context, resource: string, query: Record<string, string | undefined>) {
+    const readAreas: Record<string, string> = {
+      'supplier-prices': 'purchasing',
+      warehouses: 'inventory',
+      stock: 'inventory',
+      'kit-stock': 'inventory',
+      movements: 'inventory',
+      shipments: 'inventory',
+      receipts: 'inventory',
+      'pending-shipments': 'inventory',
+      accounts: 'finance',
+      payments: 'finance',
+      'bank-entries': 'finance',
+      margins: 'finance',
+      posts: 'content',
+      users: 'settings',
+      audit: 'settings',
+      'exchange-rates': 'settings',
+    };
+    const salesScopedResource =
+      c.role === 'SALES' && ['shipments', 'pending-shipments', 'payments'].includes(resource);
+    if (readAreas[resource] && !salesScopedResource) permit(c, readAreas[resource]);
     const page = Math.max(1, Math.min(100000, Math.floor(Number(query.page) || 1))),
       take = 25,
       skip = (page - 1) * take,
@@ -200,14 +364,17 @@ export class CatalogService {
                 ]
             : [{ name: contains }, { sku: contains }, { relatedNumbers: { has: q.toUpperCase() } }],
         };
-        return {
-          rows: await this.db.product.findMany({
+        const products = await this.db.product.findMany({
             where,
             include: { components: true },
             orderBy: { sku: 'asc' },
             skip,
             take,
-          }),
+          });
+        return {
+          rows: c.role === 'SALES'
+            ? products.map(({ costPrice: _costPrice, ...product }) => product)
+            : products,
           total: await this.db.product.count({ where }),
           page,
         };
@@ -215,6 +382,7 @@ export class CatalogService {
       case 'partners': {
         const where = {
           companyId,
+          ...(c.role === 'SALES' ? { createdById: c.userId } : {}),
           OR: [{ name: contains }, { code: contains }, { contact: contains }],
         };
         return {
@@ -225,7 +393,10 @@ export class CatalogService {
       }
       case 'contacts': {
         const where = {
-          partner: { companyId },
+          partner: {
+            companyId,
+            ...(c.role === 'SALES' ? { createdById: c.userId } : {}),
+          },
           ...(query.partnerId ? { partnerId: id(query, 'partnerId') } : {}),
           OR: [{ name: contains }, { email: contains }, { partner: { name: contains } }],
         };
@@ -273,6 +444,19 @@ export class CatalogService {
           page,
         };
       }
+      case 'exchange-rates': {
+        const where = { companyId, currency: contains };
+        return {
+          rows: await this.db.exchangeRate.findMany({
+            where,
+            orderBy: { currency: 'asc' },
+            skip,
+            take,
+          }),
+          total: await this.db.exchangeRate.count({ where }),
+          page,
+        };
+      }
       case 'warehouses': {
         const where = { companyId, name: contains };
         return {
@@ -298,6 +482,104 @@ export class CatalogService {
           page,
         };
       }
+      case 'shipments':
+      case 'receipts': {
+        const where = {
+          companyId,
+          kind: {
+            in:
+              resource === 'shipments'
+                ? ['SHIPMENT', 'SHIPMENT_RETURN']
+                : ['RECEIPT', 'RECEIPT_RETURN'],
+          },
+          ...(c.role === 'SALES'
+            ? { document: { kind: 'SALE' as const, partner: { createdById: c.userId } } }
+            : {}),
+          OR: [
+            { number: contains },
+            { note: contains },
+            { warehouse: { name: contains } },
+            { document: { number: contains } },
+            { document: { partner: { name: contains } } },
+          ],
+        };
+        return {
+          rows: await this.db.stockOperation.findMany({
+            where,
+            include: {
+              warehouse: true,
+              document: {
+                select: {
+                  id: true,
+                  number: true,
+                  kind: true,
+                  status: true,
+                  currency: true,
+                  partnerSnapshot: true,
+                  shippingMethod: true,
+                  incoterm: true,
+                  incotermLocation: true,
+                  customerReference: true,
+                  lines: {
+                    orderBy: { position: 'asc' },
+                    select: {
+                      id: true,
+                      description: true,
+                      quantity: true,
+                      fulfilled: true,
+                    },
+                  },
+                },
+              },
+            },
+            orderBy: { createdAt: 'desc' },
+            skip,
+            take,
+          }),
+          total: await this.db.stockOperation.count({ where }),
+          page,
+        };
+      }
+      case 'pending-shipments': {
+        const docKind: DocumentKind = query.kind === 'PURCHASE' ? 'PURCHASE' : 'SALE';
+        const where: Prisma.DocumentWhereInput = {
+          companyId,
+          kind: docKind,
+          status: { in: ['CONFIRMED', 'PARTIAL'] },
+          lines: { some: { kind: 'ITEM' } },
+          ...(c.role === 'SALES' ? { partner: { createdById: c.userId } } : {}),
+          OR: [
+            { number: contains },
+            { partner: { name: contains } },
+            { lines: { some: { description: contains } } },
+          ],
+        };
+        const docs = await this.db.document.findMany({
+          where,
+          include: {
+            partner: { select: { name: true } },
+            lines: {
+              where: { kind: 'ITEM' },
+              orderBy: { position: 'asc' },
+              select: { id: true, description: true, quantity: true, fulfilled: true },
+            },
+          },
+          orderBy: { date: 'asc' },
+          skip,
+          take,
+        });
+        return {
+          rows: docs.map((d) => {
+            const remaining = d.lines.reduce(
+              (sum, l) => sum.plus(l.quantity.minus(l.fulfilled)),
+              new Prisma.Decimal(0),
+            );
+            return { ...d, partnerName: d.partner.name, remaining: remaining.toString() };
+          }),
+          total: await this.db.document.count({ where }),
+          page,
+        };
+      }
       case 'movements': {
         const where = {
           operation: { companyId },
@@ -308,6 +590,7 @@ export class CatalogService {
             where,
             include: {
               product: true,
+              warehouse: true,
               operation: { include: { warehouse: true, document: { select: { number: true } } } },
             },
             orderBy: { operation: { createdAt: 'desc' } },
@@ -392,7 +675,11 @@ export class CatalogService {
         const accounts = await this.db.bankAccount.findMany({
           where,
           include: {
-            payments: { where: { reversedAt: null }, select: { amount: true, direction: true } },
+            // 收付款会自动生成关联资金收支，余额只算一次：关联流水的收付款跳过，其余手工收付款仍计入。
+            payments: {
+              where: { reversedAt: null, bankEntry: null },
+              select: { amount: true, direction: true },
+            },
             entries: { where: { operation: { reversedAt: null } }, select: { amount: true } },
           },
           orderBy: { name: 'asc' },
@@ -431,7 +718,15 @@ export class CatalogService {
         };
       }
       case 'payments': {
-        const where = { document: { companyId }, reference: contains };
+        const where = {
+          document: {
+            companyId,
+            ...(c.role === 'SALES'
+              ? { kind: 'INVOICE' as const, partner: { createdById: c.userId } }
+              : {}),
+          },
+          reference: contains,
+        };
         return {
           rows: await this.db.payment.findMany({
             where,
@@ -499,6 +794,7 @@ export class CatalogService {
       partners: 'partners',
       contacts: 'partners',
       'supplier-prices': 'purchasing',
+      'exchange-rates': 'settings',
       warehouses: 'inventory',
       accounts: 'finance',
       posts: 'content',
@@ -516,7 +812,15 @@ export class CatalogService {
       switch (resource) {
         case 'contacts': {
           const partnerId = id(b, 'partnerId')!;
-          await owned(await tx.partner.findFirst({ where: { id: partnerId, companyId } }));
+          await owned(
+            await tx.partner.findFirst({
+              where: {
+                id: partnerId,
+                companyId,
+                ...(c.role === 'SALES' ? { createdById: c.userId } : {}),
+              },
+            }),
+          );
           const data = {
             partnerId,
             name: str(b, 'name'),
@@ -529,7 +833,15 @@ export class CatalogService {
           };
           if (recordId) {
             await owned(
-              await tx.contact.findFirst({ where: { id: recordId, partner: { companyId } } }),
+              await tx.contact.findFirst({
+                where: {
+                  id: recordId,
+                  partner: {
+                    companyId,
+                    ...(c.role === 'SALES' ? { createdById: c.userId } : {}),
+                  },
+                },
+              }),
             );
             result = await tx.contact.update({ where: { id: recordId }, data });
           } else result = await tx.contact.create({ data });
@@ -589,11 +901,17 @@ export class CatalogService {
               ),
             ],
             model: str(b, 'model', 255, ''),
+            countryOfOrigin: str(b, 'countryOfOrigin', 100, ''),
             sourceTag: str(b, 'sourceTag', 100, '').trim().toUpperCase(),
             saleEnabled: bool(b, 'saleEnabled', true),
             purchaseEnabled: bool(b, 'purchaseEnabled', true),
             salePrice: dec(b, 'salePrice'),
             costPrice: dec(b, 'costPrice'),
+            weight: dec(b, 'weight', '0', '0', '100000000', 4),
+            length: dec(b, 'length', '0', '0', '100000000', 2),
+            width: dec(b, 'width', '0', '0', '100000000', 2),
+            height: dec(b, 'height', '0', '0', '100000000', 2),
+            moq: dec(b, 'moq', '1', '0.0001', '100000000', 4),
             taxRate: dec(b, 'taxRate', '0', '0', '100'),
             description: str(b, 'description', 20000, ''),
             imageUrls: strings(b, 'imageUrls', 20).map(url),
@@ -646,10 +964,10 @@ export class CatalogService {
           break;
         }
         case 'partners': {
+          const type = choice(b, 'type', ['CUSTOMER', 'SUPPLIER', 'BOTH'], 'CUSTOMER');
           const data = {
-            code: str(b, 'code', 80).toUpperCase(),
             name: str(b, 'name'),
-            type: choice(b, 'type', ['CUSTOMER', 'SUPPLIER', 'BOTH'], 'CUSTOMER'),
+            type,
             contact: str(b, 'contact', 200, ''),
             email: email(b, 'email', true),
             phone: str(b, 'phone', 80, ''),
@@ -659,9 +977,57 @@ export class CatalogService {
             active: bool(b, 'active', true),
           };
           if (recordId) {
-            await owned(await tx.partner.findFirst({ where: { id: recordId, companyId } }));
+            await owned(
+              await tx.partner.findFirst({
+                where: {
+                  id: recordId,
+                  companyId,
+                  ...(c.role === 'SALES' ? { createdById: c.userId } : {}),
+                },
+              }),
+            );
             result = await tx.partner.update({ where: { id: recordId }, data });
-          } else result = await tx.partner.create({ data: { ...data, companyId } });
+          } else {
+            const counterKind = type === 'SUPPLIER' ? 'PARTNER_SUPPLIER' : 'PARTNER_CUSTOMER';
+            let code = '';
+            do {
+              const counter = await tx.counter.upsert({
+                where: { companyId_kind: { companyId, kind: counterKind } },
+                create: { companyId, kind: counterKind, value: 1 },
+                update: { value: { increment: 1 } },
+              });
+              code = `${type === 'SUPPLIER' ? 'SUP' : 'CUS'}-${String(counter.value).padStart(6, '0')}`;
+            } while (await tx.partner.findUnique({ where: { companyId_code: { companyId, code } } }));
+            result = await tx.partner.create({
+              data: { ...data, code, companyId, createdById: c.userId },
+            });
+          }
+          break;
+        }
+        case 'exchange-rates': {
+          const data = {
+            currency: currency(b, 'currency'),
+            rate: dec(b, 'rate', '1', '0.000001', '999999', 6),
+            active: bool(b, 'active', true),
+          };
+          const company = await tx.company.findUniqueOrThrow({ where: { id: companyId } });
+          if (data.currency === company.currency && !data.rate.eq(1))
+            throw new BadRequestException('本位币汇率必须为 1');
+          if (recordId) {
+            const old = await owned(
+              await tx.exchangeRate.findFirst({ where: { id: recordId, companyId } }),
+            );
+            if (
+              old.currency !== data.currency &&
+              (await tx.exchangeRate.findFirst({ where: { companyId, currency: data.currency } }))
+            )
+              throw new ConflictException('该币种汇率已存在');
+            result = await tx.exchangeRate.update({ where: { id: recordId }, data });
+          } else {
+            if (await tx.exchangeRate.findFirst({ where: { companyId, currency: data.currency } }))
+              throw new ConflictException('该币种汇率已存在');
+            result = await tx.exchangeRate.create({ data: { ...data, companyId } });
+          }
           break;
         }
         case 'lookups': {
@@ -691,6 +1057,7 @@ export class CatalogService {
             code: str(b, 'code', 80).toUpperCase(),
             name: str(b, 'name'),
             address: str(b, 'address', 2000, ''),
+            type: choice(b, 'type', ['PHYSICAL', 'VIRTUAL'], 'PHYSICAL'),
             active: bool(b, 'active', true),
           };
           if (recordId) {
@@ -796,14 +1163,20 @@ export class CatalogService {
             );
             const role = choice(b, 'role', roles, member.role);
             const active = bool(b, 'active', member.user.active);
-            if (active !== member.user.active) {
+            const nextName = str(b, 'name', 200, member.user.name),
+              nextEmail = b.email === undefined ? member.user.email : email(b),
+              globalChange =
+                active !== member.user.active ||
+                nextName !== member.user.name ||
+                nextEmail !== member.user.email;
+            if (globalChange) {
               const memberships = await tx.membership.findMany({ where: { userId: recordId } });
               const managed = await tx.membership.findMany({
                 where: { userId: c.userId, role: 'ADMIN', user: { active: true } },
               });
               if (memberships.some((m) => !managed.some((a) => a.companyId === m.companyId)))
                 throw new ForbiddenException('启停跨公司账号须在其所有公司拥有管理员权限');
-              if (!active) {
+              if (!active && member.user.active) {
                 for (const m of memberships) {
                   if (
                     m.role === 'ADMIN' &&
@@ -819,9 +1192,14 @@ export class CatalogService {
                     throw new ConflictException('每家公司至少保留一名启用的管理员');
                 }
               }
-              await tx.user.update({ where: { id: recordId }, data: { active } });
-              if (!active) await tx.session.deleteMany({ where: { userId: recordId } });
-              await audit(tx, c, active ? 'ENABLE' : 'DISABLE', 'users', recordId);
+              await tx.user.update({
+                where: { id: recordId },
+                data: { active, name: nextName, email: nextEmail },
+              });
+              if (!active && member.user.active)
+                await tx.session.deleteMany({ where: { userId: recordId } });
+              if (active !== member.user.active)
+                await audit(tx, c, active ? 'ENABLE' : 'DISABLE', 'users', recordId);
             }
             if (
               active &&
@@ -892,7 +1270,31 @@ export class CatalogService {
       await tx.membership.delete({
         where: { userId_companyId: { userId, companyId: c.companyId } },
       });
+      const remaining = await tx.membership.count({ where: { userId } });
       await audit(tx, c, 'REMOVE', 'users', userId);
+      if (!remaining) await tx.user.delete({ where: { id: userId } });
+      return { ok: true, accountDeleted: remaining === 0 };
+    });
+  }
+  async resetUserPassword(c: Context, userId: string, raw: unknown) {
+    permit(c, 'settings');
+    id({ userId }, 'userId');
+    const hash = await hashPassword(password(object(raw)));
+    return atomic(this.db, async (tx) => {
+      await owned(
+        await tx.membership.findUnique({
+          where: { userId_companyId: { userId, companyId: c.companyId } },
+        }),
+      );
+      const memberships = await tx.membership.findMany({ where: { userId } }),
+        managed = await tx.membership.findMany({
+          where: { userId: c.userId, role: 'ADMIN', user: { active: true } },
+        });
+      if (memberships.some((membership) => !managed.some((admin) => admin.companyId === membership.companyId)))
+        throw new ForbiddenException('修改跨公司账号密码须在其所有公司拥有管理员权限');
+      await tx.user.update({ where: { id: userId }, data: { passwordHash: hash } });
+      await tx.session.deleteMany({ where: { userId } });
+      await audit(tx, c, 'RESET_PASSWORD', 'users', userId);
       return { ok: true };
     });
   }

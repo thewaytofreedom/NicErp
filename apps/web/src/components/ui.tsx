@@ -1,4 +1,5 @@
 'use client';
+import { useLanguage } from '@/components/locale-provider';
 import { useEffect, useRef } from 'react';
 export function Dialog({
   title,
@@ -11,6 +12,7 @@ export function Dialog({
   children: React.ReactNode;
   wide?: boolean;
 }) {
+  const { t } = useLanguage();
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     ref.current?.showModal();
@@ -25,8 +27,8 @@ export function Dialog({
       }}
     >
       <div className="dialog-heading">
-        <h2>{title}</h2>
-        <button className="icon-button" aria-label="关闭" onClick={close}>
+        <h2>{t(title)}</h2>
+        <button className="icon-button" aria-label={t('关闭')} onClick={close}>
           ×
         </button>
       </div>
@@ -35,12 +37,14 @@ export function Dialog({
   );
 }
 export function Empty({ text = '暂无记录，点击右上角新建开始。' }: { text?: string }) {
-  return <div className="table-empty">{text}</div>;
+  const { t } = useLanguage();
+  return <div className="table-empty">{t(text)}</div>;
 }
 export function ErrorMessage({ error }: { error: string }) {
+  const { t } = useLanguage();
   return error ? (
     <div role="alert" className="error">
-      {error}
+      {t(error)}
     </div>
   ) : null;
 }

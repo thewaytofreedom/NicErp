@@ -60,6 +60,87 @@ export async function runBrowser(fixture) {
       await expect(page.getByLabel('切换公司')).toHaveValue(fixture.companyId);
     }
     await mkdir('artifacts', { recursive: true });
+    await page.goto(origin + '/modules/settings');
+    await page.getByRole('tab', { name: '用户设置', exact: true }).click();
+    await page.getByLabel('显示语言', { exact: true }).selectOption('en');
+    await page.getByRole('button', { name: '保存设置', exact: true }).click();
+    await expect(page.getByRole('tab', { name: 'User settings', exact: true })).toBeVisible();
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+    await page.reload();
+    await expect(page.getByLabel('Display language', { exact: true })).toHaveValue('en');
+    await page.goto(origin);
+    await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+    const alternateCompany = (
+      await page
+        .getByLabel('Switch company')
+        .locator('option')
+        .evaluateAll((options) => options.map((option) => option.value))
+    ).find((id) => id !== fixture.companyId);
+    await Promise.all([
+      page.waitForEvent('load'),
+      page.getByLabel('Switch company').selectOption(alternateCompany),
+    ]);
+    await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+    await Promise.all([
+      page.waitForEvent('load'),
+      page.getByLabel('Switch company').selectOption(fixture.companyId),
+    ]);
+    await page.goto(origin + '/modules/products');
+    await expect(
+      page.getByRole('heading', { name: 'Product management', exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText('过滤器', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '＋ New', exact: true }).click();
+    await expect(page.getByLabel('Product / part number', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await page.goto(origin + '/documents/new?kind=QUOTE');
+    await expect(page.getByRole('heading', { name: 'New Quotation', exact: true })).toBeVisible();
+    await expect(page.getByLabel('Partner', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('Line 1 product', { exact: true })).toBeVisible();
+    await page
+      .locator('input[type="file"]')
+      .setInputFiles({
+        name: 'english.csv',
+        mimeType: 'text/csv',
+        buffer: Buffer.from(
+          'Sequence,Product number,Description,Quantity,Unit price,Discount rate,Tax rate\n4,PART-01,English CSV line,2.5,7.25,0,9',
+        ),
+      });
+    await expect(page.getByLabel('Line 1 description', { exact: true })).toHaveValue(
+      'English CSV line',
+    );
+    await expect(page.getByLabel('Line 1 sequence', { exact: true })).toHaveValue('4');
+    await expect(page.getByLabel('Line 1 unitPrice', { exact: true })).toHaveValue('7.25');
+    await page.goto(origin + `/documents/${fixture.quoteId}/print`);
+    await expect(
+      page.getByRole('columnheader', { name: 'Description', exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Print / Save as PDF', exact: true }),
+    ).toBeVisible();
+    await page.goto(origin);
+    await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
+    await page.getByLabel('Email', { exact: true }).fill(fixture.email);
+    await page.getByLabel('Password', { exact: true }).fill(fixture.password);
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible();
+    if ((await page.getByLabel('Switch company').inputValue()) !== fixture.companyId) {
+      await Promise.all([
+        page.waitForEvent('load'),
+        page.getByLabel('Switch company').selectOption(fixture.companyId),
+      ]);
+    }
+    await page.goto(origin + '/modules/settings?tab=4');
+    await expect(page.getByLabel('Display language', { exact: true })).toHaveValue('en');
+    await page.getByLabel('Display language', { exact: true }).selectOption('zh-CN');
+    await page.getByRole('button', { name: 'Save settings', exact: true }).click();
+    await expect(page.getByRole('tab', { name: '用户设置', exact: true })).toBeVisible();
+    await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
+    await page.goto(origin);
+    console.log(
+      'PASS browser user language settings, English forms/navigation/printing/login, persistence and unchanged business data',
+    );
     await page.screenshot({ path: 'artifacts/dashboard.png', fullPage: true });
     console.log('PASS browser login, secure cookie session and dashboard');
     await page.goto(origin + '/modules/products');
@@ -318,6 +399,16 @@ export async function runBrowser(fixture) {
     await page.goto(origin + '/modules/products');
     await expect(page.getByText('PART-01', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: '＋ 新建', exact: true })).toHaveCount(0);
+    await page.goto(origin + '/modules/settings?tab=4');
+    await page.getByLabel('显示语言', { exact: true }).selectOption('en');
+    await page.getByRole('button', { name: '保存设置', exact: true }).click();
+    await expect(page.getByRole('tab', { name: 'User settings', exact: true })).toBeVisible();
+    await page.goto(origin + '/modules/products');
+    await expect(page.getByRole('button', { name: '＋ New', exact: true })).toHaveCount(0);
+    await page.goto(origin + '/modules/settings?tab=4');
+    await page.getByLabel('Display language', { exact: true }).selectOption('zh-CN');
+    await page.getByRole('button', { name: 'Save settings', exact: true }).click();
+    await expect(page.getByRole('tab', { name: '用户设置', exact: true })).toBeVisible();
     expect(errors).toEqual([]);
     console.log(
       'PASS browser module routes, content escaping, print PDF, CSRF, company switching, mobile layout and read-only role',

@@ -1,21 +1,13 @@
 'use client';
+import { useLanguage } from '@/components/locale-provider';
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import {
-  request,
-  requestKey,
-  text,
-  money,
-  price,
-  labels,
-  can,
-  type Bootstrap,
-  type Row,
-} from '@/lib/client';
+import { request, requestKey, text, labels, can, type Bootstrap, type Row } from '@/lib/client';
 import { fieldsFor } from '@/lib/forms';
 import { parseCSV, downloadCSV } from '@/lib/csv';
 import MasterForm from './master-form';
+import UserSettings from './user-settings';
 import { Dialog, Empty, ErrorMessage } from './ui';
 interface Tab {
   name: string;
@@ -35,6 +27,10 @@ const tabs: Record<string, Tab[]> = {
   sales: [
     { name: '报价单', resource: 'documents', kind: 'QUOTE', area: 'sales' },
     { name: '销售订单', resource: 'documents', kind: 'SALE', area: 'sales' },
+    { name: '客户发票', resource: 'documents', kind: 'INVOICE', area: 'sales' },
+    { name: '销售发货单', resource: 'shipments', area: 'sales' },
+    { name: '待发货订单', resource: 'pending-shipments', kind: 'SALE', area: 'sales' },
+    { name: '收款流水', resource: 'payments', area: 'sales' },
   ],
   purchasing: [
     { name: '采购订单', resource: 'documents', kind: 'PURCHASE', area: 'purchasing' },
@@ -55,11 +51,13 @@ const tabs: Record<string, Tab[]> = {
     { name: '资金收支与对账', resource: 'bank-entries', area: 'finance' },
   ],
   content: [{ name: '网站文章', resource: 'posts', area: 'content' }],
+  users: [{ name: '用户与权限', resource: 'users', area: 'settings' }],
   settings: [
     { name: '公司资料', resource: 'company', area: 'settings' },
-    { name: '用户权限', resource: 'users', area: 'settings' },
+    { name: '汇率管理', resource: 'exchange-rates', area: 'settings' },
     { name: '操作日志', resource: 'audit', area: 'settings' },
     { name: '修改密码', resource: 'password' },
+    { name: '用户设置', resource: 'preferences' },
   ],
 };
 const columns: Record<string, [string, string][]> = {
@@ -81,7 +79,6 @@ const columns: Record<string, [string, string][]> = {
     ['note', '说明'],
     ['statementNumber', '对账单编号'],
     ['reconciledAt', '对账时间'],
-    ['operation.reversedAt', '冲销时间'],
   ],
   margins: [
     ['name', '统计对象'],
@@ -133,9 +130,15 @@ const columns: Record<string, [string, string][]> = {
     ['kind', '类型'],
     ['name', '名称'],
   ],
+  'exchange-rates': [
+    ['currency', '币种'],
+    ['rate', '汇率'],
+    ['active', '启用'],
+  ],
   warehouses: [
     ['code', '编号'],
     ['name', '仓库名称'],
+    ['type', '仓库类型'],
     ['address', '地址'],
     ['active', '启用'],
   ],
@@ -145,11 +148,37 @@ const columns: Record<string, [string, string][]> = {
     ['warehouse.name', '仓库'],
     ['quantity', '现存数量'],
   ],
+  shipments: [
+    ['number', '单号'],
+    ['date', '日期'],
+    ['kind', '业务'],
+    ['document.number', '关联订单'],
+    ['document.partnerSnapshot.name', '往来单位'],
+    ['warehouse.name', '仓库'],
+    ['note', '备注'],
+  ],
+  receipts: [
+    ['number', '单号'],
+    ['date', '日期'],
+    ['kind', '业务'],
+    ['document.number', '关联订单'],
+    ['document.partnerSnapshot.name', '往来单位'],
+    ['warehouse.name', '仓库'],
+    ['note', '备注'],
+  ],
+  'pending-shipments': [
+    ['number', '订单号'],
+    ['kind', '类型'],
+    ['status', '状态'],
+    ['date', '订单日期'],
+    ['partnerName', '往来单位'],
+    ['remaining', '待履约数量'],
+  ],
   movements: [
     ['operation.createdAt', '时间'],
     ['operation.kind', '业务'],
     ['product.sku', '产品编号'],
-    ['operation.warehouse.name', '仓库'],
+    ['warehouse.name', '仓库'],
     ['quantity', '变动数量'],
     ['balanceAfter', '结余'],
     ['operation.document.number', '关联单据'],
@@ -170,7 +199,6 @@ const columns: Record<string, [string, string][]> = {
     ['amount', '金额'],
     ['document.currency', '币种'],
     ['reference', '参考号'],
-    ['reversedAt', '冲销时间'],
     ['statementNumber', '对账单编号'],
     ['reconciledAt', '对账时间'],
   ],
@@ -211,29 +239,35 @@ function value(row: unknown, path: string): unknown {
       row,
     );
 }
-function display(v: unknown, key: string) {
-  if (['salePrice', 'costPrice'].includes(key)) return price(v);
-  if (typeof v === 'boolean') return v ? '是' : '否';
-  if (!v && v !== 0) return '—';
-  if (/At$/.test(key) || key === 'date') return text(v).replace('T', ' ').slice(0, 16);
-  if (
-    [
-      'salePrice',
-      'costPrice',
-      'total',
-      'paidAmount',
-      'openingBalance',
-      'balance',
-      'amount',
-    ].includes(key)
-  )
-    return money(v);
-  return labels[text(v)] ?? text(v);
-}
-export default function Workspace({ slug, initialTab = 0 }: { slug: string; initialTab?: number }) {
+export default function Workspace({ slug, role, initialTab = 0 }: { slug: string; role: string; initialTab?: number }) {
+  const { t, money, price } = useLanguage();
+  function display(v: unknown, key: string) {
+    if (['salePrice', 'costPrice'].includes(key)) return price(v);
+    if (typeof v === 'boolean') return v ? t('是') : t('否');
+    if (!v && v !== 0) return '—';
+    if (/At$/.test(key) || key === 'date') return text(v).replace('T', ' ').slice(0, 16);
+    if (
+      [
+        'salePrice',
+        'costPrice',
+        'total',
+        'paidAmount',
+        'openingBalance',
+        'balance',
+        'amount',
+      ].includes(key)
+    )
+      return money(v);
+    return ['type', 'role', 'kind', 'status', 'action', 'resource', 'operation.kind'].includes(key)
+      ? t(labels[text(v)] ?? text(v))
+      : text(v);
+  }
   const router = useRouter(),
-    available = tabs[slug],
-    [tabIndex, setTab] = useState(initialTab),
+    available =
+      slug === 'settings' && role !== 'ADMIN'
+        ? tabs[slug].filter((entry) => ['password', 'preferences'].includes(entry.resource))
+        : tabs[slug],
+    [tabIndex, setTab] = useState(Math.min(available.length - 1, initialTab)),
     tab = available[tabIndex] ?? available[0];
   const [boot, setBoot] = useState<Bootstrap | null>(null),
     [rows, setRows] = useState<Row[]>([]),
@@ -246,6 +280,9 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
     [version, setVersion] = useState(0),
     [editing, setEditing] = useState<Row | null | undefined>(undefined),
     [special, setSpecial] = useState(''),
+    [pendingOrder, setPendingOrder] = useState<Row | null>(null),
+    [editingShipment, setEditingShipment] = useState<Row | null>(null),
+    [passwordUser, setPasswordUser] = useState<Row | null>(null),
     [busy, setBusy] = useState(false),
     [notice, setNotice] = useState('');
   const [reportGroup, setReportGroup] = useState('product'),
@@ -263,9 +300,12 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
     setError('');
     Promise.all([
       request<Bootstrap>('erp/bootstrap'),
-      ['company', 'password'].includes(tab.resource)
+      ['company', 'password', 'preferences'].includes(tab.resource)
         ? Promise.resolve({ rows: [], total: 0 })
-        : request<{ rows: Row[]; total: number }>(
+        : request<{
+            rows: Row[];
+            total: number;
+          }>(
             `erp/${tab.resource}?page=${page}&q=${encodeURIComponent(query)}${tab.kind ? '&kind=' + tab.kind : ''}${reportQuery}`,
           ),
     ])
@@ -287,7 +327,9 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
     };
   }, [tab.resource, tab.kind, page, query, version, reportQuery]);
   const allowed = !!boot && !!tab.area && can(boot.role, tab.area),
-    cols = columns[tab.resource] ?? [];
+    cols = (columns[tab.resource] ?? []).filter(
+      ([key]) => !(role === 'SALES' && key === 'costPrice'),
+    );
   function changeTab(i: number) {
     setTab(i);
     setPage(1);
@@ -302,16 +344,19 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
     try {
       const all: Row[] = [];
       for (let p = 1; p <= 400; p++) {
-        const d = await request<{ rows: Row[]; total: number }>(
+        const d = await request<{
+          rows: Row[];
+          total: number;
+        }>(
           `erp/${tab.resource}?page=${p}&q=${encodeURIComponent(query)}${tab.kind ? '&kind=' + tab.kind : ''}${reportQuery}`,
         );
         all.push(...d.rows);
         if (all.length >= d.total) break;
-        if (p === 400) throw Error('导出超过 10,000 条，请缩小筛选范围');
+        if (p === 400) throw Error(t('导出超过 10,000 条，请缩小筛选范围'));
       }
       downloadCSV(
-        `${tab.name}.csv`,
-        cols.map((c) => c[1]),
+        `${t(tab.name)}.csv`,
+        cols.map((c) => t(c[1])),
         all.map((r) => cols.map(([k]) => display(value(r, k), k))),
       );
     } catch (e) {
@@ -324,29 +369,39 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
     setBusy(true);
     setError('');
     try {
-      if (file.size > 1000000) throw Error('文件不能超过 1MB');
+      if (file.size > 1000000) throw Error(t('文件不能超过 1MB'));
       const parsed = parseCSV(await file.text());
-      if (parsed.length > 200 || !parsed.length) throw Error('每次导入 1–200 行');
+      if (parsed.length > 200 || !parsed.length) throw Error(t('每次导入 1–200 行'));
       const fields = fieldsFor(tab.resource, boot!).filter(
         (f) => !['parts', 'tags', 'checkbox', 'password'].includes(f.type ?? ''),
       );
       const converted = parsed.map((row) =>
         Object.fromEntries(
           fields
-            .filter((f) => row[f.label] !== undefined)
+            .filter((f) => row[f.label] !== undefined || row[t(f.label)] !== undefined)
             .map((f) => {
-              const raw = row[f.label];
-              return [f.key, f.options?.find((o) => o.label === raw)?.value ?? raw];
+              const raw = row[f.label] ?? row[t(f.label)];
+              return [
+                f.key,
+                f.options?.find((o) => o.label === raw || t(o.label) === raw)?.value ?? raw,
+              ];
             }),
         ),
       );
-      const result = await request<{ created: number; errors: { row: number; message: string }[] }>(
-        `erp/import/${tab.resource}`,
-        'POST',
-        { rows: converted },
-      );
+      const result = await request<{
+        created: number;
+        errors: {
+          row: number;
+          message: string;
+        }[];
+      }>(`erp/import/${tab.resource}`, 'POST', { rows: converted });
       setNotice(
-        `导入成功 ${result.created} 条。${result.errors.map((e) => `第 ${e.row} 行：${e.message}`).join('；')}`,
+        t('导入成功 {0} 条。{1}', {
+          '0': result.created,
+          '1': result.errors
+            .map((e) => t('第 {0} 行：{1}', { '0': e.row, '1': e.message }))
+            .join('；'),
+        }),
       );
       refresh();
     } catch (e) {
@@ -370,7 +425,7 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
   return (
     <>
       <div className="tabs" role="tablist">
-        {available.map((t, i) => (
+        {available.map((entry, i) => (
           <button
             key={i}
             role="tab"
@@ -378,36 +433,38 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
             className={tabIndex === i ? 'selected' : ''}
             onClick={() => changeTab(i)}
           >
-            {t.name}
+            {t(entry.name)}
           </button>
         ))}
       </div>
-      <ErrorMessage error={error} />
+      <ErrorMessage error={t(error)} />
       {notice && (
         <p className="success" role="status">
-          {notice}
+          {t(notice)}
         </p>
       )}
       {loading ? (
-        <div className="table-empty">加载中…</div>
+        <div className="table-empty">{t('加载中…')}</div>
       ) : (
         boot && (
           <>
-            {tab.resource === 'company' ? (
+            {tab.resource === 'preferences' ? (
+              <UserSettings />
+            ) : tab.resource === 'company' ? (
               <section className="panel">
                 <h2>{boot.company.name}</h2>
                 <dl>
-                  <dt>本位币</dt>
+                  <dt>{t('本位币')}</dt>
                   <dd>{boot.company.currency}</dd>
-                  <dt>公司地址</dt>
-                  <dd>{boot.company.address || '未填写'}</dd>
-                  <dt>税务编号</dt>
-                  <dd>{boot.company.taxNumber || '未填写'}</dd>
+                  <dt>{t('公司地址')}</dt>
+                  <dd>{boot.company.address || t('未填写')}</dd>
+                  <dt>{t('税务编号')}</dt>
+                  <dd>{boot.company.taxNumber || t('未填写')}</dd>
                 </dl>
                 {allowed && (
                   <div className="toolbar">
-                    <button onClick={() => setEditing(boot.company)}>编辑公司</button>
-                    <button onClick={() => setSpecial('companies')}>＋ 新建公司</button>
+                    <button onClick={() => setEditing(boot.company)}>{t('编辑公司')}</button>
+                    <button onClick={() => setSpecial('companies')}>{t('＋ 新建公司')}</button>
                   </div>
                 )}
               </section>
@@ -432,7 +489,7 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
                 }}
               >
                 <label>
-                  原密码
+                  {t('原密码')}
                   <input
                     type="password"
                     name="oldPassword"
@@ -441,7 +498,7 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
                   />
                 </label>
                 <label>
-                  新密码
+                  {t('新密码')}
                   <input
                     type="password"
                     name="password"
@@ -452,7 +509,7 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
                   />
                 </label>
                 <button className="primary" disabled={busy}>
-                  修改并重新登录
+                  {t('修改并重新登录')}
                 </button>
               </form>
             ) : (
@@ -467,33 +524,33 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
                     className="search-form"
                   >
                     <input
-                      aria-label="搜索"
-                      placeholder="搜索编号或名称…"
+                      aria-label={t('搜索')}
+                      placeholder={t('搜索编号或名称…')}
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
                     />
-                    <button>搜索</button>
+                    <button>{t('搜索')}</button>
                   </form>
                   <div className="toolbar-actions">
                     {tab.resource === 'bank-entries' && allowed && (
-                      <button onClick={() => setSpecial('bank-transfer')}>账户转账</button>
+                      <button onClick={() => setSpecial('bank-transfer')}>{t('账户转账')}</button>
                     )}
                     {tab.resource === 'margins' && (
                       <>
                         <select
-                          aria-label="毛利分组"
+                          aria-label={t('毛利分组')}
                           value={reportGroup}
                           onChange={(e) => {
                             setReportGroup(e.target.value);
                             setPage(1);
                           }}
                         >
-                          <option value="product">按产品</option>
-                          <option value="partner">按客户</option>
-                          <option value="document">按发票</option>
+                          <option value="product">{t('按产品')}</option>
+                          <option value="partner">{t('按客户')}</option>
+                          <option value="document">{t('按发票')}</option>
                         </select>
                         <input
-                          aria-label="毛利开始日期"
+                          aria-label={t('毛利开始日期')}
                           type="date"
                           value={dateFrom}
                           onChange={(e) => {
@@ -502,7 +559,7 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
                           }}
                         />
                         <input
-                          aria-label="毛利结束日期"
+                          aria-label={t('毛利结束日期')}
                           type="date"
                           value={dateTo}
                           onChange={(e) => {
@@ -513,7 +570,7 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
                       </>
                     )}
                     <button onClick={exportRows} disabled={busy}>
-                      导出 CSV
+                      {t('导出 CSV')}
                     </button>
                     {['products', 'partners'].includes(tab.resource) && allowed && (
                       <>
@@ -525,16 +582,16 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
                                 !f.key.endsWith('Id'),
                             );
                             downloadCSV(
-                              '导入模板.csv',
+                              t('导入模板.csv'),
                               f.map((x) => x.label),
                               [],
                             );
                           }}
                         >
-                          导入模板
+                          {t('导入模板')}
                         </button>
                         <label className="button">
-                          导入 CSV
+                          {t('导入 CSV')}
                           <input
                             hidden
                             type="file"
@@ -557,25 +614,27 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
                         'supplier-prices',
                         'bank-entries',
                         'lookups',
+                        'exchange-rates',
                         'warehouses',
                         'accounts',
                         'posts',
                         'users',
                       ].includes(tab.resource) && (
                         <button className="primary" onClick={() => setEditing(null)}>
-                          ＋ 新建
+                          {t('＋ 新建')}
                         </button>
                       )}
                     {allowed && tab.resource === 'documents' && (
                       <Link className="button primary" href={`/documents/new?kind=${tab.kind}`}>
-                        ＋ 新建{tab.name}
+                        {t('＋ 新建')}
+                        {t(tab.name)}
                       </Link>
                     )}
                     {allowed && tab.resource === 'stock' && (
                       <>
-                        <button onClick={() => setSpecial('transfer')}>仓库调拨</button>
+                        <button onClick={() => setSpecial('transfer')}>{t('仓库调拨')}</button>
                         <button className="primary" onClick={() => setSpecial('adjust')}>
-                          调整库存
+                          {t('调整库存')}
                         </button>
                       </>
                     )}
@@ -586,9 +645,9 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
                     <thead>
                       <tr>
                         {cols.map(([k, label]) => (
-                          <th key={k}>{label}</th>
+                          <th key={k}>{t(label)}</th>
                         ))}
-                        <th>操作</th>
+                        <th>{t('操作')}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -607,7 +666,14 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
                           ))}
                           <td className="row-actions">
                             {tab.resource === 'documents' ? (
-                              <Link href={`/documents/${r.id}`}>查看</Link>
+                              <Link href={`/documents/${r.id}`}>{t('查看')}</Link>
+                            ) : tab.resource === 'partners' ? (
+                              <>
+                                <Link href={`/partners/${r.id}`}>{t('查看档案')}</Link>
+                                {allowed && (
+                                  <button onClick={() => setEditing(r)}>{t('编辑')}</button>
+                                )}
+                              </>
                             ) : allowed &&
                               [
                                 'products',
@@ -615,59 +681,91 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
                                 'contacts',
                                 'supplier-prices',
                                 'lookups',
+                                'exchange-rates',
                                 'warehouses',
                                 'accounts',
                                 'posts',
                                 'users',
                               ].includes(tab.resource) ? (
-                              <button onClick={() => setEditing(r)}>编辑</button>
+                              <button onClick={() => setEditing(r)}>{t('编辑')}</button>
                             ) : null}
-                            {tab.resource === 'posts' && <Link href={`/posts/${r.id}`}>预览</Link>}
-                            {tab.resource === 'users' && allowed && (
-                              <button
-                                disabled={busy}
-                                onClick={() => {
-                                  if (confirm('移除此用户在当前公司的访问权限？'))
-                                    void simpleAction(`erp/users/${r.id}`, {}, 'DELETE');
-                                }}
-                              >
-                                移除权限
-                              </button>
+                            {tab.resource === 'posts' && (
+                              <Link href={`/posts/${r.id}`}>{t('预览')}</Link>
                             )}
-                            {tab.resource === 'payments' && allowed && !r.reversedAt && (
+                            {['shipments', 'receipts'].includes(tab.resource) && (
+                              <Link href={`/shipments/${r.id}/print`} target="_blank">
+                                {t('打印发货单')}
+                              </Link>
+                            )}
+                            {tab.resource === 'shipments' && r.kind === 'SHIPMENT' && allowed && (
+                              <>
+                                <button onClick={() => setEditingShipment(r)}>{t('编辑')}</button>
+                                <button
+                                  disabled={busy}
+                                  onClick={() => {
+                                    if (confirm(t('确认删除此销售发货单？库存和订单已发数量将同步回滚。')))
+                                      void simpleAction(`erp/shipments/${r.id}`, {}, 'DELETE');
+                                  }}
+                                >
+                                  {t('删除')}
+                                </button>
+                              </>
+                            )}
+                            {tab.resource === 'pending-shipments' && allowed && (
+                                <button
+                                  onClick={() => {
+                                    setPendingOrder(r);
+                                  }}
+                                >
+                                  {r.kind === 'SALE' ? t('登记发货') : t('登记收货')}
+                                </button>
+                              )}
+                            {tab.resource === 'pending-shipments' && (
+                              <Link href={`/documents/${r.id}`}>{t('查看')}</Link>
+                            )}
+                            {tab.resource === 'users' && allowed && (
+                              <>
+                                <button onClick={() => setPasswordUser(r)}>{t('修改密码')}</button>
+                                <button
+                                  disabled={busy}
+                                  onClick={() => {
+                                    if (confirm(t('确认删除此用户？如果该账号还属于其他公司，只会移除当前公司的访问权限。')))
+                                      void simpleAction(`erp/users/${r.id}`, {}, 'DELETE');
+                                  }}
+                                >
+                                  {t('删除用户')}
+                                </button>
+                              </>
+                            )}
+                            {tab.resource === 'payments' && allowed && (
                               <button
                                 disabled={busy}
                                 onClick={() => {
-                                  if (confirm('冲销此笔收付款？该操作会恢复单据未付余额。'))
+                                  if (confirm(t('冲销此笔收付款？该操作会删除记录并恢复单据未付余额。')))
                                     void simpleAction(`erp/payments/${r.id}/reverse`);
                                 }}
                               >
-                                冲销
+                                {t('冲销')}
                               </button>
                             )}
-                            {tab.resource === 'bank-entries' &&
-                              allowed &&
-                              !(r.operation as Row)?.reversedAt && (
-                                <button
-                                  disabled={busy}
-                                  onClick={() =>
-                                    void simpleAction(`erp/bank/${text(r.operationId)}/reverse`)
-                                  }
-                                >
-                                  冲销操作
-                                </button>
-                              )}
+                            {tab.resource === 'bank-entries' && allowed && (
+                              <button
+                                disabled={busy}
+                                onClick={() =>
+                                  void simpleAction(`erp/bank/${text(r.operationId)}/reverse`)
+                                }
+                              >
+                                {t('冲销操作')}
+                              </button>
+                            )}
                             {['bank-entries', 'payments'].includes(tab.resource) &&
-                              allowed &&
-                              !(tab.resource === 'payments'
-                                ? r.reversedAt
-                                : (r.operation as Row)?.reversedAt) && (
+                              allowed && (
                                 <button
                                   disabled={busy}
                                   onClick={() => {
                                     const statementNumber = r.reconciledAt
                                       ? ''
-                                      : prompt('银行对账单编号');
+                                      : prompt(t('银行对账单编号'));
                                     if (statementNumber !== null)
                                       void simpleAction('erp/bank/reconcile', {
                                         [tab.resource === 'payments' ? 'paymentId' : 'entryId']:
@@ -677,7 +775,7 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
                                       });
                                   }}
                                 >
-                                  {r.reconciledAt ? '取消对账' : '对账'}
+                                  {r.reconciledAt ? t('取消对账') : t('对账')}
                                 </button>
                               )}
                           </td>
@@ -689,22 +787,28 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
                 </div>
                 <div className="pagination">
                   <span>
-                    共 {total} 条 · 第 {page} 页
+                    {t('共')}
+                    {total}
+                    {t('条 · 第')}
+                    {page}
+                    {t('页')}
                   </span>
                   <button disabled={page === 1} onClick={() => setPage((p) => p - 1)}>
-                    上一页
+                    {t('上一页')}
                   </button>
                   <button disabled={page * 25 >= total} onClick={() => setPage((p) => p + 1)}>
-                    下一页
+                    {t('下一页')}
                   </button>
                 </div>
                 {tab.resource === 'stock' && (
                   <p className="hint">
-                    现存数量为仓库实物库存；组合产品出入库按组成零件展开。订单确认不预占库存。
+                    {t(
+                      '现存数量为仓库实物库存；组合产品出入库按组成零件展开。订单确认不预占库存。',
+                    )}
                   </p>
                 )}
                 {tab.resource === 'posts' && (
-                  <p className="hint">发布状态仅保存在 NicErp，尚未连接外部展示网站。</p>
+                  <p className="hint">{t('发布状态仅保存在 NicErp，尚未连接外部展示网站。')}</p>
                 )}
               </>
             )}
@@ -744,7 +848,367 @@ export default function Workspace({ slug, initialTab = 0 }: { slug: string; init
           saved={refresh}
         />
       )}
+      {pendingOrder && boot && (
+        <ShipmentDialog
+          order={pendingOrder}
+          boot={boot}
+          close={() => setPendingOrder(null)}
+          saved={refresh}
+        />
+      )}
+      {editingShipment && boot && (
+        <ShipmentEditDialog
+          shipment={editingShipment}
+          boot={boot}
+          close={() => setEditingShipment(null)}
+          saved={refresh}
+        />
+      )}
+      {passwordUser && (
+        <UserPasswordDialog
+          user={passwordUser}
+          close={() => setPasswordUser(null)}
+          saved={refresh}
+        />
+      )}
     </>
+  );
+}
+function UserPasswordDialog({
+  user,
+  close,
+  saved,
+}: {
+  user: Row;
+  close: () => void;
+  saved: () => void;
+}) {
+  const { t } = useLanguage();
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState('');
+  return (
+    <Dialog title={t('修改用户密码')} close={() => !busy && close()}>
+      <form
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setBusy(true);
+          setError('');
+          const form = new FormData(event.currentTarget),
+            password = text(form.get('password')),
+            confirmPassword = text(form.get('confirmPassword'));
+          try {
+            if (password !== confirmPassword) throw Error(t('两次输入的密码不一致'));
+            await request(`erp/users/${user.id}/password`, 'PATCH', { password });
+            saved();
+            close();
+          } catch (e) {
+            setError((e as Error).message);
+            setBusy(false);
+          }
+        }}
+      >
+        <p className="hint">
+          {text(user.name)} · {text(user.email)}
+        </p>
+        <label>
+          {t('新密码')}
+          <input name="password" type="password" minLength={12} maxLength={128} required />
+          <small>{t('至少 12 位；保存后该用户的现有会话将全部退出。')}</small>
+        </label>
+        <label>
+          {t('确认新密码')}
+          <input name="confirmPassword" type="password" minLength={12} maxLength={128} required />
+        </label>
+        <ErrorMessage error={t(error)} />
+        <div className="form-actions">
+          <button type="button" onClick={close} disabled={busy}>{t('取消')}</button>
+          <button className="primary" disabled={busy}>{busy ? t('保存中…') : t('保存密码')}</button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+function ShipmentEditDialog({
+  shipment,
+  boot,
+  close,
+  saved,
+}: {
+  shipment: Row;
+  boot: Bootstrap;
+  close: () => void;
+  saved: () => void;
+}) {
+  const { t } = useLanguage();
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState(''),
+    [lineFilter, setLineFilter] = useState('');
+  const document = shipment.document as Row | undefined,
+    lines = (document?.lines as Row[]) ?? [],
+    previous = new Map(
+      (((shipment.lineQuantities as Row[]) ?? []).map((line) => [text(line.lineId), text(line.quantity)])),
+    );
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    const form = new FormData(e.currentTarget);
+    try {
+      await request(`erp/shipments/${shipment.id}`, 'PATCH', {
+        warehouseId: form.get('warehouseId'),
+        date: form.get('date'),
+        note: form.get('note'),
+        lines: lines
+          .map((line) => ({ lineId: line.id, quantity: text(form.get(text(line.id))) }))
+          .filter((line) => Number(line.quantity) > 0),
+      });
+      saved();
+      close();
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  }
+  return (
+    <Dialog title={t('编辑销售发货单')} close={() => !busy && close()} wide>
+      <form onSubmit={submit}>
+        <p className="hint">
+          {t('发货单')} {text(shipment.number)} · {t('关联订单')} {text(document?.number)}
+        </p>
+        <label>
+          {t('仓库')}
+          <select name="warehouseId" required defaultValue={text(shipment.warehouseId)}>
+            {boot.warehouses.filter((warehouse) => warehouse.type === 'PHYSICAL').map((warehouse) => (
+              <option key={warehouse.id} value={warehouse.id}>
+                {text(warehouse.name)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          {t('业务日期')}
+          <input name="date" type="date" required defaultValue={text(shipment.date).slice(0, 10)} />
+        </label>
+        <p className="hint">{t('修改数量后，库存和订单已发数量会同步调整。')}</p>
+        <input
+          className="line-filter"
+          type="search"
+          value={lineFilter}
+          onChange={(e) => setLineFilter(e.target.value)}
+          placeholder={t('筛选明细、产品编号或描述')}
+          aria-label={t('筛选发货明细')}
+        />
+        <div className="shipment-lines">
+        {lines.map((line) => {
+          const oldQuantity = Number(previous.get(text(line.id)) ?? 0),
+            available = Number(line.quantity) - Number(line.fulfilled) + oldQuantity,
+            hidden = !!lineFilter.trim() && !text(line.description).toLocaleLowerCase().includes(lineFilter.trim().toLocaleLowerCase());
+          return (
+            <label key={text(line.id)} hidden={hidden}>
+              {text(line.description)}
+              <input
+                aria-label={text(line.description) + t(' 本次数量')}
+                name={text(line.id)}
+                type="number"
+                step="0.0001"
+                min="0"
+                max={available}
+                defaultValue={oldQuantity || ''}
+              />
+              <small>
+                {t('本次原数量')}：{oldQuantity} · {t('最多可发')}：{available}
+              </small>
+            </label>
+          );
+        })}
+        </div>
+        <label>
+          {t('备注')}
+          <textarea name="note" maxLength={1000} defaultValue={text(shipment.note)} />
+        </label>
+        <ErrorMessage error={t(error)} />
+        <div className="form-actions">
+          <button type="button" onClick={close} disabled={busy}>
+            {t('取消')}
+          </button>
+          <button className="primary" disabled={busy}>
+            {busy ? t('处理中…') : t('保存')}
+          </button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+function ShipmentDialog({
+  order,
+  boot,
+  close,
+  saved,
+}: {
+  order: Row;
+  boot: Bootstrap;
+  close: () => void;
+  saved: () => void;
+}) {
+  const { t } = useLanguage();
+  const router = useRouter(),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState(''),
+    [key, setKey] = useState(requestKey),
+    [lineFilter, setLineFilter] = useState('');
+  const lines = (order.lines as Row[]) ?? [],
+    sale = order.kind === 'SALE',
+    [quantities, setQuantities] = useState<Record<string, string>>(() =>
+      Object.fromEntries(
+        lines.map((line) => [
+          text(line.id),
+          String(Math.max(0, Number(line.quantity) - Number(line.fulfilled))),
+        ]),
+      ),
+    );
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    const f = new FormData(e.currentTarget);
+    try {
+      const result = await request<{ id: string; number?: string }>(
+        `erp/documents/${order.id}/fulfill`,
+        'POST',
+        {
+          warehouseId: f.get('warehouseId'),
+          note: f.get('note'),
+          date: f.get('date'),
+          requestKey: key,
+          action: 'FULFILL',
+          lines: lines
+            .map((l) => ({ lineId: l.id, quantity: quantities[text(l.id)] ?? '0' }))
+            .filter((l) => Number(l.quantity) > 0),
+        },
+      );
+      saved();
+      close();
+      if (result.id) router.push(`/shipments/${result.id}/print`);
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  }
+  return (
+    <Dialog
+      title={sale ? t('登记发货') : t('登记收货')}
+      close={() => !busy && close()}
+      wide
+    >
+      <form onSubmit={submit} onChange={() => setKey(requestKey())}>
+        <p className="hint">
+          {t('订单')}
+          {text(order.number)} · {text(order.partnerName)} · {t('待履约数量')}
+          {text(order.remaining)}
+        </p>
+        <label>
+          {t('仓库')}
+          <select
+            name="warehouseId"
+            required
+            defaultValue={text(boot.warehouses.find((warehouse) => warehouse.type === 'PHYSICAL')?.id)}
+          >
+            <option value="">{t('请选择仓库')}</option>
+            {boot.warehouses.filter((w) => w.type === 'PHYSICAL').map((w) => (
+              <option key={w.id} value={w.id}>
+                {text(w.name)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          {t('业务日期')}
+          <input
+            name="date"
+            type="date"
+            required
+            defaultValue={new Date().toISOString().slice(0, 10)}
+          />
+          <small>{t('将作为发货单 / 收货单日期。')}</small>
+        </label>
+        <p className="hint">{t('填写本次数量，0 表示跳过。')}</p>
+        <div className="toolbar-actions">
+          <button
+            type="button"
+            onClick={() =>
+              setQuantities(
+                Object.fromEntries(
+                  lines.map((line) => [
+                    text(line.id),
+                    String(Math.max(0, Number(line.quantity) - Number(line.fulfilled))),
+                  ]),
+                ),
+              )
+            }
+          >
+            {t('一键填充全部数量')}
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              setQuantities(Object.fromEntries(lines.map((line) => [text(line.id), '0'])))
+            }
+          >
+            {t('全部清零')}
+          </button>
+        </div>
+        <input
+          className="line-filter"
+          type="search"
+          value={lineFilter}
+          onChange={(e) => setLineFilter(e.target.value)}
+          placeholder={t('筛选明细、产品编号或描述')}
+          aria-label={t('筛选发货明细')}
+        />
+        <div className="shipment-lines">
+        {lines.map((l) => {
+          const remaining = Number(l.quantity) - Number(l.fulfilled),
+            hidden = !!lineFilter.trim() && !text(l.description).toLocaleLowerCase().includes(lineFilter.trim().toLocaleLowerCase());
+          return (
+            <label key={text(l.id)} hidden={hidden}>
+              {text(l.description)}
+              <input
+                aria-label={text(l.description) + t(' 本次数量')}
+                name={text(l.id)}
+                type="number"
+                step="0.0001"
+                min="0"
+                max={remaining}
+                value={quantities[text(l.id)] ?? '0'}
+                onChange={(event) =>
+                  setQuantities((current) => ({
+                    ...current,
+                    [text(l.id)]: event.target.value,
+                  }))
+                }
+              />
+              <small>
+                {t('尚未履约')}：{remaining}
+              </small>
+            </label>
+          );
+        })}
+        </div>
+        <label>
+          {t('备注')}
+          <textarea name="note" maxLength={1000} />
+        </label>
+        <ErrorMessage error={t(error)} />
+        <div className="form-actions">
+          <button type="button" onClick={close} disabled={busy}>
+            {t('取消')}
+          </button>
+          <button className="primary" disabled={busy}>
+            {busy ? t('处理中…') : sale ? t('确认发货') : t('确认收货')}
+          </button>
+        </div>
+      </form>
+    </Dialog>
   );
 }
 function Adjustment({
@@ -758,11 +1222,12 @@ function Adjustment({
   saved: () => void;
   transfer?: boolean;
 }) {
+  const { t } = useLanguage();
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [key, setKey] = useState(requestKey);
   return (
-    <Dialog title={transfer ? '仓库调拨' : '库存调整'} close={() => !busy && close()}>
+    <Dialog title={transfer ? t('仓库调拨') : t('库存调整')} close={() => !busy && close()}>
       <form
         onChange={() => setKey(requestKey())}
         onSubmit={async (e) => {
@@ -783,9 +1248,9 @@ function Adjustment({
         }}
       >
         <label>
-          仓库
+          {t('仓库')}
           <select name="warehouseId" required>
-            <option value="">请选择</option>
+            <option value="">{t('请选择')}</option>
             {boot.warehouses.map((w) => (
               <option key={w.id} value={w.id}>
                 {text(w.name)}
@@ -795,9 +1260,9 @@ function Adjustment({
         </label>
         {transfer && (
           <label>
-            调入仓库
+            {t('调入仓库')}
             <select name="targetWarehouseId" required>
-              <option value="">请选择</option>
+              <option value="">{t('请选择')}</option>
               {boot.warehouses.map((w) => (
                 <option key={w.id} value={w.id}>
                   {text(w.name)}
@@ -807,9 +1272,9 @@ function Adjustment({
           </label>
         )}
         <label>
-          库存产品
+          {t('库存产品')}
           <select name="productId" required>
-            <option value="">请选择</option>
+            <option value="">{t('请选择')}</option>
             {boot.products
               .filter((p) => p.type === 'STOCK')
               .map((p) => (
@@ -820,22 +1285,22 @@ function Adjustment({
           </select>
         </label>
         <label>
-          变动数量
+          {t('变动数量')}
           <input type="number" step="0.0001" name="quantity" required />
           <small>
             {transfer
-              ? '填写正数，同时记录调出和调入流水。'
-              : '正数入库，负数出库；不能导致负库存。'}
+              ? t('填写正数，同时记录调出和调入流水。')
+              : t('正数入库，负数出库；实体仓库不能为负数，虚拟仓库允许负数。')}
           </small>
         </label>
         <label>
-          调整原因
+          {t('调整原因')}
           <textarea name="note" required maxLength={1000} />
         </label>
-        <ErrorMessage error={error} />
+        <ErrorMessage error={t(error)} />
         <div className="form-actions">
           <button className="primary" disabled={busy}>
-            {busy ? '处理中…' : '确认调整'}
+            {busy ? t('处理中…') : t('确认调整')}
           </button>
         </div>
       </form>

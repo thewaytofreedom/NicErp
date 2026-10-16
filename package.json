@@ -16,11 +16,12 @@
     "db:down": "docker compose down",
     "db:generate": "npm run db:generate -w @nicerp/api",
     "db:push": "npm run db:push -w @nicerp/api",
-    "test": "npm run test -w @nicerp/api",
+    "test": "npm run test -w @nicerp/api && npm run test:i18n",
     "test:smoke": "node scripts/smoke.mjs",
     "test:business": "npm run db:generate && npm run build -w @nicerp/api && node --env-file=apps/api/.env scripts/test-business.mjs",
     "test:browser": "npm run build -w @nicerp/web && BROWSER_TEST=1 npm run test:business",
-    "format": "prettier --write \"apps/*/src/**/*.{ts,tsx,css}\" \"apps/api/test/*.mjs\" \"scripts/*.mjs\""
+    "format": "prettier --write \"apps/*/src/**/*.{ts,tsx,css}\" \"apps/api/test/*.mjs\" \"scripts/*.mjs\"",
+    "test:i18n": "node --test scripts/test-i18n.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

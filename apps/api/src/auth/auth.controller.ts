@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Post, Req } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthService } from './auth.service.js';
 import { Public } from './auth.guard.js';
@@ -22,6 +22,9 @@ export class AuthController {
   }
   @Post('logout') logout(@Req() r: AppRequest) {
     return this.auth.logout(r.auth);
+  }
+  @Patch('preferences') preferences(@Req() r: AppRequest, @Body() b: unknown) {
+    return this.auth.preferences(r.auth, b);
   }
   @Post('password') password(@Req() r: AppRequest, @Body() b: unknown) {
     return this.auth.changePassword(r.auth, b);

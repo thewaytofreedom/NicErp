@@ -248,13 +248,16 @@ export class DocumentsService {
       status = query.status
         ? choice(query, 'status', ['DRAFT', 'CONFIRMED', 'PARTIAL', 'FULFILLED', 'VOID'] as const)
         : undefined;
+    if (kind && !(c.role === 'SALES' && ['QUOTE', 'SALE', 'INVOICE'].includes(kind)))
+      permit(c, documentArea(kind));
     const page = Math.max(1, Math.min(100000, Math.floor(Number(query.page) || 1))),
       q = (query.q ?? '').slice(0, 200),
       contains = { contains: q, mode: 'insensitive' as const };
-    const where = {
+    const where: Prisma.DocumentWhereInput = {
       companyId: c.companyId,
-      kind,
+      kind: c.role === 'SALES' ? (kind ?? { in: ['QUOTE', 'SALE', 'INVOICE'] }) : kind,
       status,
+      ...(c.role === 'SALES' ? { partner: { createdById: c.userId } } : {}),
       OR: [{ number: contains }, { partner: { name: contains } }],
     };
     return {
@@ -271,12 +274,58 @@ export class DocumentsService {
   }
   async detail(c: Context, docId: string) {
     id({ docId }, 'docId');
-    return owned(
+    const document = await owned(
       await this.db.document.findFirst({
-        where: { id: docId, companyId: c.companyId },
+        where: {
+          id: docId,
+          companyId: c.companyId,
+          ...(c.role === 'SALES' ? { partner: { createdById: c.userId } } : {}),
+        },
         include: includeDoc,
       }),
     );
+    if (!(c.role === 'SALES' && ['QUOTE', 'SALE', 'INVOICE'].includes(document.kind)))
+      permit(c, documentArea(document.kind));
+    if (c.role !== 'SALES') return document;
+    return {
+      ...document,
+      lines: document.lines.map(({ unitCost: _unitCost, ...line }) => line),
+    };
+  }
+  // 发货单 / 收货单详情：含单据信息、本次发货明细与对应产品。
+  async shipmentDetail(c: Context, opId: string) {
+    id({ opId }, 'opId');
+    const operation = await owned(
+      await this.db.stockOperation.findFirst({
+        where: {
+          id: opId,
+          companyId: c.companyId,
+          ...(c.role === 'SALES'
+            ? { kind: { in: ['SHIPMENT', 'SHIPMENT_RETURN'] }, document: { partner: { createdById: c.userId } } }
+            : {}),
+        },
+        include: {
+          warehouse: true,
+          document: {
+            include: {
+              partner: true,
+              lines: {
+                orderBy: { position: 'asc' },
+                include: { product: { select: { id: true, sku: true, unit: true } } },
+              },
+            },
+          },
+        },
+      }),
+    );
+    if (c.role !== 'SALES' || !operation.document) return operation;
+    return {
+      ...operation,
+      document: {
+        ...operation.document,
+        lines: operation.document.lines.map(({ unitCost: _unitCost, ...line }) => line),
+      },
+    };
   }
   private async lines(
     tx: Tx,
@@ -392,22 +441,82 @@ export class DocumentsService {
     if (subtotal.plus(taxTotal).gt('99999999999999')) throw new BadRequestException('单据总额过大');
     return { lines: sectionTotals(lines), subtotal, taxTotal, total: subtotal.plus(taxTotal) };
   }
-  private async nextNumber(tx: Tx, c: Context, kind: Kind) {
+  private async nextNumber(tx: Tx, c: Context, kind: Kind, documentDate = new Date()) {
+    if (kind === 'SALE' || kind === 'INVOICE') {
+      const period = `${String(documentDate.getUTCFullYear()).slice(-2)}${String(
+        documentDate.getUTCMonth() + 1,
+      ).padStart(2, '0')}`;
+      const counterKind = `${kind}_${period}`;
+      let number = '';
+      do {
+        const counter = await tx.counter.upsert({
+          where: { companyId_kind: { companyId: c.companyId, kind: counterKind } },
+          create: { companyId: c.companyId, kind: counterKind, value: 1 },
+          update: { value: { increment: 1 } },
+        });
+        number = `${kind === 'SALE' ? 'CO' : 'FA'}${period}-${String(counter.value).padStart(4, '0')}`;
+      } while (
+        await tx.document.findUnique({ where: { companyId_number: { companyId: c.companyId, number } } })
+      );
+      return number;
+    }
     const counter = await tx.counter.upsert({
       where: { companyId_kind: { companyId: c.companyId, kind } },
       create: { companyId: c.companyId, kind, value: 1 },
       update: { value: { increment: 1 } },
     });
-    const prefix = { QUOTE: 'QT', SALE: 'SO', PURCHASE: 'PO', INVOICE: 'INV', BILL: 'BILL' };
+    const prefix = { QUOTE: 'QT', SALE: 'CO', PURCHASE: 'PO', INVOICE: 'FA', BILL: 'BILL' };
     return `${prefix[kind]}-${String(counter.value).padStart(6, '0')}`;
+  }
+  // 销售发货沿用订单主体并改为 SH；同一订单后续分批发货追加操作序号。
+  private async nextOpNumber(
+    tx: Tx,
+    c: Context,
+    kind: string,
+    document?: { id: string; number: string },
+  ) {
+    if (kind === 'SHIPMENT' && document) {
+      const base = /^CO\d{4}-\d{4}$/.test(document.number)
+        ? `SH${document.number.slice(2)}`
+        : `SH-${document.number}`;
+      const sequence = await tx.counter.upsert({
+        where: {
+          companyId_kind: { companyId: c.companyId, kind: `SHIPMENT_${document.id}` },
+        },
+        create: { companyId: c.companyId, kind: `SHIPMENT_${document.id}`, value: 1 },
+        update: { value: { increment: 1 } },
+      });
+      return sequence.value === 1 ? base : `${base}-${sequence.value}`;
+    }
+    const counter = await tx.counter.upsert({
+      where: { companyId_kind: { companyId: c.companyId, kind } },
+      create: { companyId: c.companyId, kind, value: 1 },
+      update: { value: { increment: 1 } },
+    });
+    const prefix: Record<string, string> = {
+      SHIPMENT: 'DN',
+      SHIPMENT_RETURN: 'SR',
+      RECEIPT: 'RC',
+      RECEIPT_RETURN: 'RR',
+    };
+    return `${prefix[kind] ?? 'OP'}-${String(counter.value).padStart(6, '0')}`;
   }
   async save(c: Context, raw: unknown, docId?: string) {
     const b = object(raw),
       kind = choice(b, 'kind', kinds);
-    permit(c, documentArea(kind));
+    if (!(c.role === 'SALES' && ['QUOTE', 'SALE', 'INVOICE'].includes(kind)))
+      permit(c, documentArea(kind));
     return atomic(this.db, async (tx) => {
       const old = docId
-        ? await owned(await tx.document.findFirst({ where: { id: docId, companyId: c.companyId } }))
+        ? await owned(
+            await tx.document.findFirst({
+              where: {
+                id: docId,
+                companyId: c.companyId,
+                ...(c.role === 'SALES' ? { partner: { createdById: c.userId } } : {}),
+              },
+            }),
+          )
         : null;
       if (old && (old.status !== 'DRAFT' || old.kind !== kind))
         throw new ConflictException('只能编辑同类型的草稿单据');
@@ -417,7 +526,12 @@ export class DocumentsService {
         partnerId = id(b, 'partnerId')!,
         partner = await owned(
           await tx.partner.findFirst({
-            where: { id: partnerId, companyId: c.companyId, active: true },
+            where: {
+              id: partnerId,
+              companyId: c.companyId,
+              active: true,
+              ...(c.role === 'SALES' ? { createdById: c.userId } : {}),
+            },
           }),
         );
       if (
@@ -483,7 +597,7 @@ export class DocumentsService {
             ...data,
             kind,
             companyId: c.companyId,
-            number: await this.nextNumber(tx, c, kind),
+          number: await this.nextNumber(tx, c, kind, documentDate),
             lines: { create: amounts.lines },
           },
         });
@@ -514,11 +628,16 @@ export class DocumentsService {
     return atomic(this.db, async (tx) => {
       const doc = await owned(
         await tx.document.findFirst({
-          where: { id: docId, companyId: c.companyId },
+          where: {
+            id: docId,
+            companyId: c.companyId,
+            ...(c.role === 'SALES' ? { partner: { createdById: c.userId } } : {}),
+          },
           include: { lines: true, children: true },
         }),
       );
-      permit(c, documentArea(doc.kind));
+      if (!(c.role === 'SALES' && ['QUOTE', 'SALE', 'INVOICE'].includes(doc.kind)))
+        permit(c, documentArea(doc.kind));
       if (action === 'accept' || action === 'reject') {
         if (doc.kind !== 'QUOTE' || doc.status !== 'CONFIRMED' || doc.quoteDecision !== 'PENDING')
           throw new ConflictException('只能接受或拒绝已确认且待回复的报价');
@@ -555,14 +674,18 @@ export class DocumentsService {
         return result;
       }
       if (action === 'delete') {
-        if (
-          doc.status !== 'DRAFT' ||
-          doc.children.length ||
-          doc.lines.some((l) => l.fulfilled.gt(0)) ||
-          doc.paidAmount.gt(0)
-        )
-          throw new ConflictException('只能删除没有关联业务的草稿');
-        if (
+        if (!['DRAFT', 'VOID'].includes(doc.status))
+          throw new ConflictException('只能删除草稿或已作废的单据');
+        if (doc.children.some((d) => d.status !== 'VOID'))
+          throw new ConflictException('存在有效下游单据时不能删除');
+        if (doc.lines.some((l) => l.fulfilled.gt(0)))
+          throw new ConflictException('存在已履约数量时不能删除');
+        if (doc.paidAmount.gt(0))
+          throw new ConflictException('存在未冲销付款时不能删除');
+        if (doc.status === 'VOID') {
+          // 作废单据残留的付款记录均已冲销，删除以解除 payments.documentId 外键约束。
+          await tx.payment.deleteMany({ where: { documentId: doc.id } });
+        } else if (
           (await tx.stockOperation.count({ where: { documentId: doc.id } })) ||
           (await tx.payment.count({ where: { documentId: doc.id } }))
         )
@@ -600,15 +723,21 @@ export class DocumentsService {
   async convert(c: Context, docId: string, raw: unknown) {
     const b = object(raw),
       target = choice(b, 'kind', kinds);
-    permit(c, documentArea(target));
+    if (!(c.role === 'SALES' && ['QUOTE', 'SALE', 'INVOICE'].includes(target)))
+      permit(c, documentArea(target));
     return atomic(this.db, async (tx) => {
       const doc = await owned(
         await tx.document.findFirst({
-          where: { id: docId, companyId: c.companyId },
+          where: {
+            id: docId,
+            companyId: c.companyId,
+            ...(c.role === 'SALES' ? { partner: { createdById: c.userId } } : {}),
+          },
           include: { lines: { orderBy: { position: 'asc' } } },
         }),
       );
-      permit(c, documentArea(doc.kind));
+      if (!(c.role === 'SALES' && ['QUOTE', 'SALE', 'INVOICE'].includes(doc.kind)))
+        permit(c, documentArea(doc.kind));
       if (
         !(
           { QUOTE: ['SALE'], SALE: ['INVOICE', 'PURCHASE'], PURCHASE: ['BILL'] } as Record<
@@ -693,11 +822,20 @@ export class DocumentsService {
         }
         total = subtotal.plus(taxTotal);
       }
+      const conversionDate = new Date();
+      let number: string;
+      if (target === 'INVOICE' && doc.kind === 'SALE' && /^CO\d{4}-\d{4}$/.test(doc.number)) {
+        const base = `FA${doc.number.slice(2)}`;
+        const related = await tx.document.count({
+          where: { companyId: c.companyId, number: { startsWith: base } },
+        });
+        number = related === 0 ? base : `${base}-${related + 1}`;
+      } else number = await this.nextNumber(tx, c, target, conversionDate);
       const result = await tx.document.create({
         data: {
           companyId: c.companyId,
           kind: target,
-          number: await this.nextNumber(tx, c, target),
+          number,
           partnerId,
           partnerSnapshot,
           sourceId: doc.id,
@@ -707,7 +845,7 @@ export class DocumentsService {
           subtotal,
           taxTotal,
           total,
-          date: new Date(),
+          date: conversionDate,
           incoterm: doc.incoterm,
           deliveryDate: doc.deliveryDate,
           customerReference: doc.customerReference,
@@ -734,15 +872,77 @@ export class DocumentsService {
     const key = { warehouseId_productId: { warehouseId, productId } };
     const stock = await tx.stockBalance.findUnique({ where: key });
     const after = (stock?.quantity ?? new D(0)).plus(quantity);
-    if (after.lt(0)) throw new ConflictException('库存不足，操作已全部回滚');
+    if (after.lt(0)) {
+      const warehouse = await tx.warehouse.findUnique({
+        where: { id: warehouseId },
+        select: { type: true },
+      });
+      if (warehouse?.type !== 'VIRTUAL')
+        throw new ConflictException('实体仓库库存不足，操作已全部回滚');
+    }
     await tx.stockBalance.upsert({
       where: key,
       create: { warehouseId, productId, quantity: after },
       update: { quantity: after },
     });
     await tx.stockMovement.create({
-      data: { operationId, productId, quantity, balanceAfter: after },
+      data: { operationId, warehouseId, productId, quantity, balanceAfter: after },
     });
+  }
+  private async allocateSaleShipment(
+    tx: Tx,
+    operationId: string,
+    physicalWarehouseId: string,
+    virtualWarehouseId: string | null,
+    stockParts: { productId: string; quantity: string }[],
+    quantity: Prisma.Decimal,
+  ) {
+    let physicalQuantity = quantity;
+    for (const part of stockParts) {
+      const perUnit = new D(part.quantity);
+      if (perUnit.lte(0)) continue;
+      const stock = await tx.stockBalance.findUnique({
+        where: {
+          warehouseId_productId: {
+            warehouseId: physicalWarehouseId,
+            productId: part.productId,
+          },
+        },
+      });
+      const available = Prisma.Decimal.max(stock?.quantity ?? 0, 0).div(perUnit);
+      physicalQuantity = Prisma.Decimal.min(physicalQuantity, available);
+    }
+    physicalQuantity = physicalQuantity.toDecimalPlaces(4, Prisma.Decimal.ROUND_FLOOR);
+    const virtualQuantity = quantity.minus(physicalQuantity);
+    if (virtualQuantity.gt(0) && !virtualWarehouseId)
+      throw new ConflictException('实体仓库库存不足，且未配置启用的虚拟仓库');
+    for (const part of stockParts) {
+      const perUnit = new D(part.quantity);
+      if (physicalQuantity.gt(0))
+        await this.move(
+          tx,
+          operationId,
+          physicalWarehouseId,
+          part.productId,
+          physicalQuantity.mul(perUnit).negated(),
+        );
+      if (virtualQuantity.gt(0))
+        await this.move(
+          tx,
+          operationId,
+          virtualWarehouseId!,
+          part.productId,
+          virtualQuantity.mul(perUnit).negated(),
+        );
+    }
+    return [
+      ...(physicalQuantity.gt(0)
+        ? [{ warehouseId: physicalWarehouseId, quantity: physicalQuantity.toString() }]
+        : []),
+      ...(virtualQuantity.gt(0)
+        ? [{ warehouseId: virtualWarehouseId!, quantity: virtualQuantity.toString() }]
+        : []),
+    ];
   }
   async adjust(c: Context, raw: unknown) {
     permit(c, 'inventory');
@@ -853,10 +1053,11 @@ export class DocumentsService {
     });
   }
   async fulfill(c: Context, docId: string, raw: unknown) {
-    permit(c, 'inventory');
+    if (c.role !== 'SALES') permit(c, 'inventory');
     const b = object(raw),
       warehouseId = id(b, 'warehouseId')!,
       requestKey = str(b, 'requestKey', 100),
+      opDate = date(b, 'date', true) ?? new Date(),
       action = choice(b, 'action', ['FULFILL', 'RETURN'], 'FULFILL');
     const requested = list(b, 'lines', 200)
       .map(object)
@@ -866,7 +1067,7 @@ export class DocumentsService {
       }));
     if (!requested.length || new Set(requested.map((l) => l.lineId)).size !== requested.length)
       throw new BadRequestException('请选择明细且不能重复');
-    const fp = fingerprint({ docId, warehouseId, action, requested });
+    const fp = fingerprint({ docId, warehouseId, action, date: opDate.toISOString(), requested });
     return atomic(this.db, async (tx) => {
       const previous = await tx.stockOperation.findUnique({
         where: { companyId_requestKey: { companyId: c.companyId, requestKey } },
@@ -877,17 +1078,32 @@ export class DocumentsService {
       }
       const doc = await owned(
         await tx.document.findFirst({
-          where: { id: docId, companyId: c.companyId },
+          where: {
+            id: docId,
+            companyId: c.companyId,
+            ...(c.role === 'SALES'
+              ? { kind: 'SALE', partner: { createdById: c.userId } }
+              : {}),
+          },
           include: { lines: true },
         }),
       );
       if (!['SALE', 'PURCHASE'].includes(doc.kind) || ['DRAFT', 'VOID'].includes(doc.status))
         throw new ConflictException('只能对已确认的销售或采购订单操作');
-      await owned(
+      const selectedWarehouse = await owned(
         await tx.warehouse.findFirst({
           where: { id: warehouseId, companyId: c.companyId, active: true },
         }),
       );
+      if (doc.kind === 'SALE' && action === 'FULFILL' && selectedWarehouse.type !== 'PHYSICAL')
+        throw new BadRequestException('销售发货请选择实体仓库，缺货部分会自动转入虚拟仓库');
+      const virtualWarehouse =
+        doc.kind === 'SALE' && action === 'FULFILL'
+          ? await tx.warehouse.findFirst({
+              where: { companyId: c.companyId, type: 'VIRTUAL', active: true },
+              orderBy: { code: 'asc' },
+            })
+          : null;
       const past =
         action === 'RETURN'
           ? await tx.stockOperation.findMany({ where: { documentId: doc.id, warehouseId } })
@@ -919,6 +1135,8 @@ export class DocumentsService {
           companyId: c.companyId,
           warehouseId,
           documentId: doc.id,
+          number: await this.nextOpNumber(tx, c, kind, { id: doc.id, number: doc.number }),
+          date: opDate,
           requestKey,
           fingerprint: fp,
           lineQuantities: requested,
@@ -926,17 +1144,39 @@ export class DocumentsService {
           note: str(b, 'note', 1000, ''),
         },
       });
+      const allocatedLines: {
+        lineId: string;
+        quantity: string;
+        allocations?: { warehouseId: string; quantity: string }[];
+      }[] = [];
       for (const request of requested) {
         const line = doc.lines.find((l) => l.id === request.lineId)!,
           qty = new D(request.quantity),
           sign = (doc.kind === 'SALE' ? -1 : 1) * (action === 'RETURN' ? -1 : 1);
-        for (const part of line.stockParts as { productId: string; quantity: string }[]) {
-          await this.move(tx, op.id, warehouseId, part.productId, qty.mul(part.quantity).mul(sign));
-        }
+        const stockParts = line.stockParts as { productId: string; quantity: string }[];
+        const allocations =
+          doc.kind === 'SALE' && action === 'FULFILL'
+            ? await this.allocateSaleShipment(
+                tx,
+                op.id,
+                warehouseId,
+                virtualWarehouse?.id ?? null,
+                stockParts,
+                qty,
+              )
+            : undefined;
+        if (!allocations)
+          for (const part of stockParts)
+            await this.move(tx, op.id, warehouseId, part.productId, qty.mul(part.quantity).mul(sign));
+        allocatedLines.push({ ...request, ...(allocations ? { allocations } : {}) });
         const fulfilled = line.fulfilled.plus(qty.mul(action === 'RETURN' ? -1 : 1));
         await tx.documentLine.update({ where: { id: line.id }, data: { fulfilled } });
         line.fulfilled = fulfilled;
       }
+      await tx.stockOperation.update({
+        where: { id: op.id },
+        data: { lineQuantities: allocatedLines },
+      });
       const items = doc.lines.filter((l) => l.kind === 'ITEM'),
         status = items.every((l) => l.fulfilled.eq(l.quantity))
           ? 'FULFILLED'
@@ -951,8 +1191,190 @@ export class DocumentsService {
       return op;
     });
   }
+  private async refreshFulfillmentStatus(tx: Tx, documentId: string) {
+    const lines = await tx.documentLine.findMany({
+      where: { documentId, kind: 'ITEM' },
+      select: { quantity: true, fulfilled: true },
+    });
+    const status = lines.every((line) => line.fulfilled.eq(line.quantity))
+      ? 'FULFILLED'
+      : lines.some((line) => line.fulfilled.gt(0))
+        ? 'PARTIAL'
+        : 'CONFIRMED';
+    await tx.document.update({
+      where: { id: documentId },
+      data: { status, version: { increment: 1 } },
+    });
+  }
+  private async reverseShipmentMovements(
+    tx: Tx,
+    operation: {
+      id: string;
+      warehouseId: string;
+      movements: { warehouseId: string | null; productId: string; quantity: Prisma.Decimal }[];
+    },
+  ) {
+    for (const movement of operation.movements) {
+      const movementWarehouseId = movement.warehouseId ?? operation.warehouseId;
+      const key = {
+        warehouseId_productId: {
+          warehouseId: movementWarehouseId,
+          productId: movement.productId,
+        },
+      };
+      const stock = await tx.stockBalance.findUnique({ where: key });
+      if (!stock) throw new ConflictException('库存记录不存在，不能修改此发货单');
+      await tx.stockBalance.update({
+        where: key,
+        data: { quantity: stock.quantity.minus(movement.quantity) },
+      });
+    }
+    await tx.stockMovement.deleteMany({ where: { operationId: operation.id } });
+  }
+  async updateShipment(c: Context, operationId: string, raw: unknown) {
+    if (c.role !== 'SALES') permit(c, 'inventory');
+    id({ operationId }, 'operationId');
+    const b = object(raw),
+      warehouseId = id(b, 'warehouseId')!,
+      opDate = date(b, 'date')!,
+      note = str(b, 'note', 1000, ''),
+      requested = list(b, 'lines', 200)
+        .map(object)
+        .map((line) => ({
+          lineId: id(line, 'lineId')!,
+          quantity: dec(line, 'quantity', '1', '0.0001', '100000000').toString(),
+        }));
+    if (!requested.length || new Set(requested.map((line) => line.lineId)).size !== requested.length)
+      throw new BadRequestException('请选择明细且不能重复');
+    return atomic(this.db, async (tx) => {
+      const operation = await owned(
+        await tx.stockOperation.findFirst({
+          where: {
+            id: operationId,
+            companyId: c.companyId,
+            kind: 'SHIPMENT',
+            ...(c.role === 'SALES'
+              ? { document: { kind: 'SALE', partner: { createdById: c.userId } } }
+              : {}),
+          },
+          include: { movements: true, document: { include: { lines: true } } },
+        }),
+      );
+      if (!operation.document) throw new ConflictException('发货单没有关联销售订单');
+      if (
+        await tx.stockOperation.count({
+          where: { documentId: operation.document.id, kind: 'SHIPMENT_RETURN' },
+        })
+      )
+        throw new ConflictException('订单已有销售退回记录，不能编辑发货单');
+      const selectedWarehouse = await owned(
+        await tx.warehouse.findFirst({
+          where: { id: warehouseId, companyId: c.companyId, active: true },
+        }),
+      );
+      if (selectedWarehouse.type !== 'PHYSICAL')
+        throw new BadRequestException('销售发货请选择实体仓库，缺货部分会自动转入虚拟仓库');
+      const virtualWarehouse = await tx.warehouse.findFirst({
+        where: { companyId: c.companyId, type: 'VIRTUAL', active: true },
+        orderBy: { code: 'asc' },
+      });
+      const previous = operation.lineQuantities as { lineId: string; quantity: string }[];
+      const previousByLine = new Map(previous.map((line) => [line.lineId, new D(line.quantity)]));
+      for (const request of requested) {
+        const line = operation.document.lines.find(
+          (candidate) => candidate.id === request.lineId && candidate.kind === 'ITEM',
+        );
+        if (!line) throw new BadRequestException('无效的履约明细');
+        const available = line.quantity.minus(line.fulfilled).plus(previousByLine.get(line.id) ?? 0);
+        if (new D(request.quantity).gt(available))
+          throw new ConflictException('数量超过订单可发货数量');
+      }
+      await this.reverseShipmentMovements(tx, operation);
+      for (const entry of previous) {
+        await tx.documentLine.update({
+          where: { id: entry.lineId },
+          data: { fulfilled: { decrement: new D(entry.quantity) } },
+        });
+      }
+      await tx.stockOperation.update({
+        where: { id: operation.id },
+        data: {
+          warehouseId,
+          date: opDate,
+          note,
+          fingerprint: fingerprint({ warehouseId, date: opDate.toISOString(), note, requested }),
+        },
+      });
+      const allocatedLines: {
+        lineId: string;
+        quantity: string;
+        allocations: { warehouseId: string; quantity: string }[];
+      }[] = [];
+      for (const request of requested) {
+        const line = operation.document.lines.find((candidate) => candidate.id === request.lineId)!,
+          quantity = new D(request.quantity);
+        const allocations = await this.allocateSaleShipment(
+          tx,
+          operation.id,
+          warehouseId,
+          virtualWarehouse?.id ?? null,
+          line.stockParts as { productId: string; quantity: string }[],
+          quantity,
+        );
+        allocatedLines.push({ ...request, allocations });
+        await tx.documentLine.update({
+          where: { id: line.id },
+          data: { fulfilled: { increment: quantity } },
+        });
+      }
+      await tx.stockOperation.update({
+        where: { id: operation.id },
+        data: { lineQuantities: allocatedLines },
+      });
+      await this.refreshFulfillmentStatus(tx, operation.document.id);
+      await audit(tx, c, 'UPDATE_SHIPMENT', 'inventory', operation.id, operation.number);
+      return tx.stockOperation.findUniqueOrThrow({ where: { id: operation.id } });
+    });
+  }
+  async deleteShipment(c: Context, operationId: string) {
+    if (c.role !== 'SALES') permit(c, 'inventory');
+    id({ operationId }, 'operationId');
+    return atomic(this.db, async (tx) => {
+      const operation = await owned(
+        await tx.stockOperation.findFirst({
+          where: {
+            id: operationId,
+            companyId: c.companyId,
+            kind: 'SHIPMENT',
+            ...(c.role === 'SALES'
+              ? { document: { kind: 'SALE', partner: { createdById: c.userId } } }
+              : {}),
+          },
+          include: { movements: true, document: true },
+        }),
+      );
+      if (!operation.document) throw new ConflictException('发货单没有关联销售订单');
+      if (
+        await tx.stockOperation.count({
+          where: { documentId: operation.document.id, kind: 'SHIPMENT_RETURN' },
+        })
+      )
+        throw new ConflictException('订单已有销售退回记录，不能删除发货单');
+      await this.reverseShipmentMovements(tx, operation);
+      for (const entry of operation.lineQuantities as { lineId: string; quantity: string }[]) {
+        await tx.documentLine.update({
+          where: { id: entry.lineId },
+          data: { fulfilled: { decrement: new D(entry.quantity) } },
+        });
+      }
+      await tx.stockOperation.delete({ where: { id: operation.id } });
+      await this.refreshFulfillmentStatus(tx, operation.document.id);
+      await audit(tx, c, 'DELETE_SHIPMENT', 'inventory', operation.id, operation.number);
+      return { deleted: true };
+    });
+  }
   async pay(c: Context, docId: string, raw: unknown) {
-    permit(c, 'finance');
+    if (c.role !== 'SALES') permit(c, 'finance');
     const b = object(raw),
       accountId = id(b, 'accountId')!,
       amount = dec(b, 'amount', '0', '0.01', '999999999999', 2),
@@ -973,7 +1395,15 @@ export class DocumentsService {
         return previous;
       }
       const doc = await owned(
-        await tx.document.findFirst({ where: { id: docId, companyId: c.companyId } }),
+        await tx.document.findFirst({
+          where: {
+            id: docId,
+            companyId: c.companyId,
+            ...(c.role === 'SALES'
+              ? { kind: 'INVOICE', partner: { createdById: c.userId } }
+              : {}),
+          },
+        }),
       );
       if (!['INVOICE', 'BILL'].includes(doc.kind) || doc.status !== 'CONFIRMED')
         throw new ConflictException('只能对已确认的发票收付款');
@@ -987,6 +1417,7 @@ export class DocumentsService {
       if (account.currency !== doc.currency)
         throw new BadRequestException('账户与单据币种必须相同');
       if (paymentDate < doc.date) throw new BadRequestException('付款日期不能早于单据日期');
+      const direction = doc.kind === 'INVOICE' ? 'IN' : 'OUT';
       const payment = await tx.payment.create({
         data: {
           documentId: doc.id,
@@ -996,7 +1427,27 @@ export class DocumentsService {
           reference,
           requestKey,
           fingerprint: fp,
-          direction: doc.kind === 'INVOICE' ? 'IN' : 'OUT',
+          direction,
+        },
+      });
+      // 登记收付款自动生成一条关联的资金收支，账户余额只计一次，避免重复记账。
+      await tx.bankOperation.create({
+        data: {
+          companyId: c.companyId,
+          kind: direction,
+          requestKey: `pay:${payment.id}`,
+          fingerprint: fp,
+          entries: {
+            create: {
+              accountId,
+              paymentId: payment.id,
+              amount: direction === 'IN' ? amount : amount.negated(),
+              date: paymentDate,
+              reference,
+              category: '收付款',
+              note: doc.number,
+            },
+          },
         },
       });
       await tx.document.update({
@@ -1015,25 +1466,34 @@ export class DocumentsService {
     });
   }
   async reversePayment(c: Context, paymentId: string) {
-    permit(c, 'finance');
+    if (c.role !== 'SALES') permit(c, 'finance');
     return atomic(this.db, async (tx) => {
       const payment = await owned(
         await tx.payment.findFirst({
-          where: { id: paymentId, document: { companyId: c.companyId } },
+          where: {
+            id: paymentId,
+            document: {
+              companyId: c.companyId,
+              ...(c.role === 'SALES'
+                ? { kind: 'INVOICE', partner: { createdById: c.userId } }
+                : {}),
+            },
+          },
+          include: { bankEntry: true },
         }),
       );
-      if (payment.reversedAt) return payment;
       if (payment.reconciledAt) throw new ConflictException('请先取消银行对账，再冲销付款');
-      const result = await tx.payment.update({
-        where: { id: paymentId },
-        data: { reversedAt: new Date() },
-      });
+      if (payment.bankEntry) {
+        await tx.bankEntry.delete({ where: { id: payment.bankEntry.id } });
+        await tx.bankOperation.delete({ where: { id: payment.bankEntry.operationId } });
+      }
       await tx.document.update({
         where: { id: payment.documentId },
         data: { paidAmount: { decrement: payment.amount }, version: { increment: 1 } },
       });
+      await tx.payment.delete({ where: { id: paymentId } });
       await audit(tx, c, 'REVERSE', 'payments', paymentId);
-      return result;
+      return { id: paymentId };
     });
   }
 }

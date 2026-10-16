@@ -1,4 +1,5 @@
 'use client';
+import { useLanguage } from '@/components/locale-provider';
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -7,8 +8,6 @@ import {
   requestKey,
   text,
   labels,
-  money,
-  price,
   can,
   areaFor,
   type Bootstrap,
@@ -17,6 +16,7 @@ import {
 } from '@/lib/client';
 import { Dialog, ErrorMessage } from './ui';
 export default function DocumentView({ doc, boot }: { doc: Document; boot: Bootstrap }) {
+  const { t, money, price } = useLanguage();
   const router = useRouter(),
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
@@ -27,11 +27,9 @@ export default function DocumentView({ doc, boot }: { doc: Document; boot: Boots
     setBusy(true);
     setError('');
     try {
-      const result = await request<{ id: string }>(
-        `erp/documents/${doc.id}/${action}`,
-        'POST',
-        body,
-      );
+      const result = await request<{
+        id: string;
+      }>(`erp/documents/${doc.id}/${action}`, 'POST', body);
       if (action === 'convert' || action === 'clone') router.push(`/documents/${result.id}`);
       if (action === 'delete')
         router.push(
@@ -49,40 +47,52 @@ export default function DocumentView({ doc, boot }: { doc: Document; boot: Boots
     <>
       <div className="heading">
         <div>
-          <p className="eyebrow">{labels[doc.kind]}</p>
+          <p className="eyebrow">{t(labels[doc.kind])}</p>
           <h1>
             {doc.number}{' '}
-            <span className={`status ${doc.status.toLowerCase()}`}>{labels[doc.status]}</span>
+            <span className={`status ${doc.status.toLowerCase()}`}>{t(labels[doc.status])}</span>
           </h1>
           <p className="subtitle">
             {doc.partnerSnapshot.name} · {doc.date.slice(0, 10)} · {doc.currency}
           </p>
         </div>
         <Link className="button" href={`/documents/${doc.id}/print`} target="_blank">
-          打印 / 保存 PDF
+          {t('打印 / 保存 PDF')}
         </Link>
       </div>
-      <ErrorMessage error={error} />
+      <ErrorMessage error={t(error)} />
       <div className="toolbar">
         <div className="toolbar-actions">
           {writable && (
             <button disabled={busy} onClick={() => void action('clone')}>
-              复制为新草稿
+              {t('复制为新草稿')}
             </button>
           )}
           {writable && doc.status === 'DRAFT' && (
             <button
               disabled={busy}
               onClick={() => {
-                if (confirm('删除此草稿？')) void action('delete');
+                if (confirm(t('删除此草稿？'))) void action('delete');
               }}
             >
-              删除草稿
+              {t('删除草稿')}
+            </button>
+          )}
+          {writable && doc.status === 'VOID' && (
+            <button
+              className="danger"
+              disabled={busy}
+              onClick={() => {
+                if (confirm(t('确认永久删除此已作废单据？此操作不可恢复。')))
+                  void action('delete');
+              }}
+            >
+              {t('删除单据')}
             </button>
           )}
           {writable && live && (
             <button disabled={busy} onClick={() => void action('reopen')}>
-              返回草稿
+              {t('返回草稿')}
             </button>
           )}
           {writable &&
@@ -91,67 +101,69 @@ export default function DocumentView({ doc, boot }: { doc: Document; boot: Boots
             doc.quoteDecision === 'PENDING' && (
               <>
                 <button disabled={busy} onClick={() => void action('accept')}>
-                  客户接受报价
+                  {t('客户接受报价')}
                 </button>
                 <button
                   disabled={busy}
                   onClick={() => {
-                    const reason = prompt('拒绝原因（可留空）');
+                    const reason = prompt(t('拒绝原因（可留空）'));
                     if (reason !== null) void action('reject', { reason });
                   }}
                 >
-                  客户拒绝报价
+                  {t('客户拒绝报价')}
                 </button>
               </>
             )}
           {writable && doc.status === 'DRAFT' && (
             <>
               <Link className="button" href={`/documents/${doc.id}/edit`}>
-                编辑草稿
+                {t('编辑草稿')}
               </Link>
               <button className="primary" disabled={busy} onClick={() => action('confirm')}>
-                确认单据
+                {t('确认单据')}
               </button>
             </>
           )}
           {writable && live && doc.kind === 'QUOTE' && doc.quoteDecision !== 'REFUSED' && (
             <button disabled={busy} onClick={() => action('convert', { kind: 'SALE' })}>
-              转销售订单
+              {t('转销售订单')}
             </button>
           )}
           {live && doc.kind === 'SALE' && (
             <>
-              {writable && can(boot.role, 'finance') && (
+              {writable && (
                 <button disabled={busy} onClick={() => action('convert', { kind: 'INVOICE' })}>
-                  转客户发票
+                  {t('转客户发票')}
                 </button>
               )}
               {writable && can(boot.role, 'purchasing') && (
                 <button disabled={busy} onClick={() => setDialog('convert')}>
-                  转采购订单
+                  {t('转采购订单')}
                 </button>
               )}
             </>
           )}
           {live && doc.kind === 'PURCHASE' && writable && can(boot.role, 'finance') && (
             <button disabled={busy} onClick={() => action('convert', { kind: 'BILL' })}>
-              转供应商发票
+              {t('转供应商发票')}
             </button>
           )}
-          {live && ['SALE', 'PURCHASE'].includes(doc.kind) && can(boot.role, 'inventory') && (
+          {live &&
+            ['SALE', 'PURCHASE'].includes(doc.kind) &&
+            (doc.kind === 'SALE' ? writable : can(boot.role, 'inventory')) && (
             <>
               <button className="primary" onClick={() => setDialog('fulfill')}>
-                {doc.kind === 'SALE' ? '登记发货' : '登记收货'}
+                {doc.kind === 'SALE' ? t('登记发货') : t('登记收货')}
               </button>
-              <button onClick={() => setDialog('return')}>登记退回</button>
+              <button onClick={() => setDialog('return')}>{t('登记退回')}</button>
             </>
           )}
           {live &&
             ['INVOICE', 'BILL'].includes(doc.kind) &&
-            can(boot.role, 'finance') &&
+            writable &&
             Number(doc.total) > Number(doc.paidAmount) && (
               <button className="primary" onClick={() => setDialog('pay')}>
-                {doc.kind === 'INVOICE' ? '登记收款' : '登记付款'}
+                {doc.kind === 'INVOICE' ? t('登记收款') : t('登记付款')}
               </button>
             )}
           {writable && doc.status !== 'VOID' && (
@@ -159,62 +171,63 @@ export default function DocumentView({ doc, boot }: { doc: Document; boot: Boots
               className="danger"
               disabled={busy}
               onClick={() => {
-                if (confirm('确认作废此单据？有已履约数量、付款或有效下游单据时将被拒绝。'))
+                if (confirm(t('确认作废此单据？有已履约数量、付款或有效下游单据时将被拒绝。')))
                   void action('void');
               }}
             >
-              作废
+              {t('作废')}
             </button>
           )}
         </div>
       </div>
       <section className="panel document-info">
         <div>
-          <small>往来单位</small>
+          <small>{t('往来单位')}</small>
           <h3>{doc.partnerSnapshot.name}</h3>
-          <p>{doc.partnerSnapshot.address || '未填写地址'}</p>
+          <p>{doc.partnerSnapshot.address || t('未填写地址')}</p>
           <p>
             {doc.partnerSnapshot.contact} {doc.partnerSnapshot.email}
           </p>
         </div>
         <dl>
-          <dt>到期日期</dt>
+          <dt>{t('到期日期')}</dt>
           <dd>{doc.dueDate?.slice(0, 10) || '—'}</dd>
           {doc.kind === 'QUOTE' && (
             <>
-              <dt>报价有效期</dt>
+              <dt>{t('报价有效期')}</dt>
               <dd>{doc.validUntil?.slice(0, 10) || '—'}</dd>
-              <dt>客户回复</dt>
+              <dt>{t('客户回复')}</dt>
               <dd>
-                {{ PENDING: '待回复', ACCEPTED: '已接受', REFUSED: '已拒绝' }[doc.quoteDecision] ||
-                  doc.quoteDecision}{' '}
+                {{ PENDING: t('待回复'), ACCEPTED: t('已接受'), REFUSED: t('已拒绝') }[
+                  doc.quoteDecision
+                ] || doc.quoteDecision}{' '}
                 {doc.decisionReason}
               </dd>
             </>
           )}
-          <dt>参考号</dt>
+          <dt>{t('参考号')}</dt>
           <dd>{doc.customerReference || '—'}</dd>
-          <dt>交货日期</dt>
+          <dt>{t('交货日期')}</dt>
           <dd>{doc.deliveryDate?.slice(0, 10) || '—'}</dd>
-          <dt>付款条件 / 方式</dt>
+          <dt>{t('付款条件 / 方式')}</dt>
           <dd>
             {doc.paymentTerms || '—'} / {doc.paymentMethod || '—'}
           </dd>
-          <dt>配送方式</dt>
+          <dt>{t('配送方式')}</dt>
           <dd>{doc.shippingMethod || '—'}</dd>
-          <dt>汇率</dt>
+          <dt>{t('汇率')}</dt>
           <dd>
             1 {doc.currency} = {doc.exchangeRate} {boot.company.currency}
           </dd>
-          <dt>整单折扣</dt>
+          <dt>{t('整单折扣')}</dt>
           <dd>{doc.discountRate}%</dd>
-          <dt>贸易术语</dt>
+          <dt>{t('贸易术语')}</dt>
           <dd>
             {doc.incoterm || '—'} {doc.incotermLocation}
           </dd>
           {doc.source && (
             <>
-              <dt>来源单据</dt>
+              <dt>{t('来源单据')}</dt>
               <dd>
                 <Link href={`/documents/${doc.source.id}`}>{doc.source.number}</Link>
               </dd>
@@ -226,15 +239,15 @@ export default function DocumentView({ doc, boot }: { doc: Document; boot: Boots
         <table>
           <thead>
             <tr>
-              {doc.kind === 'QUOTE' && <th>序号</th>}
-              <th>描述</th>
-              <th>数量</th>
-              <th>单价</th>
-              <th>折扣 %</th>
-              <th>税率 %</th>
-              <th>未税金额</th>
-              <th>含税金额</th>
-              {['SALE', 'PURCHASE'].includes(doc.kind) && <th>已履约</th>}
+              {doc.kind === 'QUOTE' && <th>{t('序号')}</th>}
+              <th>{t('描述')}</th>
+              <th>{t('数量')}</th>
+              <th>{t('单价')}</th>
+              <th>{t('折扣 %')}</th>
+              <th>{t('税率 %')}</th>
+              <th>{t('未税金额')}</th>
+              <th>{t('含税金额')}</th>
+              {['SALE', 'PURCHASE'].includes(doc.kind) && <th>{t('已履约')}</th>}
             </tr>
           </thead>
           <tbody>
@@ -258,7 +271,7 @@ export default function DocumentView({ doc, boot }: { doc: Document; boot: Boots
                   </>
                 ) : (
                   <td colSpan={['SALE', 'PURCHASE'].includes(doc.kind) ? 7 : 6}>
-                    {l.kind === 'SUBTOTAL' ? `未税小计 ${money(l.net)}` : ''}
+                    {l.kind === 'SUBTOTAL' ? t('未税小计 {0}', { '0': money(l.net) }) : ''}
                   </td>
                 )}
               </tr>
@@ -267,16 +280,21 @@ export default function DocumentView({ doc, boot }: { doc: Document; boot: Boots
         </table>
       </div>
       <div className="document-summary">
-        <p className="preserve">{doc.notes || '无备注'}</p>
-        {doc.privateNotes && <p className="preserve">内部备注：{doc.privateNotes}</p>}
+        <p className="preserve">{doc.notes || t('无备注')}</p>
+        {doc.privateNotes && (
+          <p className="preserve">
+            {t('内部备注：')}
+            {doc.privateNotes}
+          </p>
+        )}
         <dl>
-          <dt>未税合计</dt>
+          <dt>{t('未税合计')}</dt>
           <dd>
             {doc.currency} {money(doc.subtotal)}
           </dd>
-          <dt>税额</dt>
+          <dt>{t('税额')}</dt>
           <dd>{money(doc.taxTotal)}</dd>
-          <dt>含税总额</dt>
+          <dt>{t('含税总额')}</dt>
           <dd>
             <strong>
               {doc.currency} {money(doc.total)}
@@ -284,9 +302,9 @@ export default function DocumentView({ doc, boot }: { doc: Document; boot: Boots
           </dd>
           {['INVOICE', 'BILL'].includes(doc.kind) && (
             <>
-              <dt>已付金额</dt>
+              <dt>{t('已付金额')}</dt>
               <dd>{money(doc.paidAmount)}</dd>
-              <dt>未付金额</dt>
+              <dt>{t('未付金额')}</dt>
               <dd>{money(Number(doc.total) - Number(doc.paidAmount))}</dd>
             </>
           )}
@@ -294,11 +312,11 @@ export default function DocumentView({ doc, boot }: { doc: Document; boot: Boots
       </div>
       {!!doc.children.length && (
         <section className="panel">
-          <h3>关联单据</h3>
+          <h3>{t('关联单据')}</h3>
           <div className="related-docs">
             {doc.children.map((d) => (
               <Link key={d.id} href={`/documents/${d.id}`}>
-                {d.number} · {labels[d.status]}
+                {d.number} · {t(labels[d.status])}
               </Link>
             ))}
           </div>
@@ -306,22 +324,22 @@ export default function DocumentView({ doc, boot }: { doc: Document; boot: Boots
       )}
       {!!doc.operations.length && (
         <section className="panel">
-          <h3>收发货与退回记录</h3>
+          <h3>{t('收发货与退回记录')}</h3>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>时间</th>
-                  <th>操作</th>
-                  <th>仓库</th>
-                  <th>备注</th>
+                  <th>{t('时间')}</th>
+                  <th>{t('操作')}</th>
+                  <th>{t('仓库')}</th>
+                  <th>{t('备注')}</th>
                 </tr>
               </thead>
               <tbody>
                 {doc.operations.map((op) => (
                   <tr key={op.id}>
                     <td>{text(op.createdAt).replace('T', ' ').slice(0, 16)}</td>
-                    <td>{labels[text(op.kind)]}</td>
+                    <td>{t(labels[text(op.kind)])}</td>
                     <td>{text((op.warehouse as Row).name)}</td>
                     <td>{text(op.note)}</td>
                   </tr>
@@ -333,16 +351,15 @@ export default function DocumentView({ doc, boot }: { doc: Document; boot: Boots
       )}
       {!!doc.payments.length && (
         <section className="panel">
-          <h3>收付款记录</h3>
+          <h3>{t('收付款记录')}</h3>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>日期</th>
-                  <th>账户</th>
-                  <th>金额</th>
-                  <th>参考号</th>
-                  <th>状态</th>
+                  <th>{t('日期')}</th>
+                  <th>{t('账户')}</th>
+                  <th>{t('金额')}</th>
+                  <th>{t('参考号')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -352,7 +369,6 @@ export default function DocumentView({ doc, boot }: { doc: Document; boot: Boots
                     <td>{text((p.account as Row).name)}</td>
                     <td>{money(p.amount)}</td>
                     <td>{text(p.reference)}</td>
-                    <td>{p.reversedAt ? '已冲销' : '有效'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -388,6 +404,7 @@ function OperationDialog({
   close: () => void;
   saved: () => void;
 }) {
+  const { t } = useLanguage();
   const router = useRouter(),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
@@ -405,6 +422,7 @@ function OperationDialog({
       body = {
         warehouseId: f.get('warehouseId'),
         note: f.get('note'),
+        date: f.get('date'),
         requestKey: key,
         action: mode === 'return' ? 'RETURN' : 'FULFILL',
         lines: items
@@ -416,11 +434,9 @@ function OperationDialog({
       body = { kind: 'PURCHASE', partnerId: f.get('partnerId') };
     }
     try {
-      const result = await request<{ id: string }>(
-        `erp/documents/${doc.id}/${action}`,
-        'POST',
-        body,
-      );
+      const result = await request<{
+        id: string;
+      }>(`erp/documents/${doc.id}/${action}`, 'POST', body);
       if (mode === 'convert') router.push(`/documents/${result.id}`);
       saved();
     } catch (e) {
@@ -431,18 +447,18 @@ function OperationDialog({
   const title =
     mode === 'pay'
       ? doc.kind === 'INVOICE'
-        ? '登记收款'
-        : '登记付款'
+        ? t('登记收款')
+        : t('登记付款')
       : mode === 'convert'
-        ? '转采购订单'
+        ? t('转采购订单')
         : mode === 'return'
-          ? '登记退回'
+          ? t('登记退回')
           : doc.kind === 'SALE'
-            ? '登记发货'
-            : '登记收货';
+            ? t('登记发货')
+            : t('登记收货');
   return (
     <Dialog
-      title={title}
+      title={t(title)}
       close={() => !busy && close()}
       wide={['fulfill', 'return'].includes(mode)}
     >
@@ -450,9 +466,9 @@ function OperationDialog({
         {mode === 'pay' ? (
           <>
             <label>
-              资金账户
+              {t('资金账户')}
               <select name="accountId" required>
-                <option value="">请选择相同币种的账户</option>
+                <option value="">{t('请选择相同币种的账户')}</option>
                 {boot.accounts
                   .filter((a) => a.currency === doc.currency)
                   .map((a) => (
@@ -463,7 +479,8 @@ function OperationDialog({
               </select>
             </label>
             <label>
-              金额 ({doc.currency})
+              {t('金额 (')}
+              {doc.currency})
               <input
                 name="amount"
                 type="number"
@@ -474,7 +491,7 @@ function OperationDialog({
               />
             </label>
             <label>
-              日期
+              {t('日期')}
               <input
                 name="date"
                 type="date"
@@ -483,16 +500,16 @@ function OperationDialog({
               />
             </label>
             <label>
-              付款参考号
+              {t('付款参考号')}
               <input name="reference" maxLength={200} />
             </label>
           </>
         ) : mode === 'convert' ? (
           <>
             <label>
-              供应商
+              {t('供应商')}
               <select name="partnerId" required>
-                <option value="">请选择供应商</option>
+                <option value="">{t('请选择供应商')}</option>
                 {boot.partners
                   .filter((p) => ['SUPPLIER', 'BOTH'].includes(p.type))
                   .map((p) => (
@@ -502,22 +519,44 @@ function OperationDialog({
                   ))}
               </select>
             </label>
-            <p className="hint">将以产品参考成本生成本位币采购草稿，请核对供应商报价后确认。</p>
+            <p className="hint">
+              {t('将以产品参考成本生成本位币采购草稿，请核对供应商报价后确认。')}
+            </p>
           </>
         ) : (
           <>
             <label>
-              仓库
-              <select name="warehouseId" required>
-                <option value="">请选择仓库</option>
-                {boot.warehouses.map((w) => (
+              {t('仓库')}
+              <select
+                name="warehouseId"
+                required
+                defaultValue={text(
+                  boot.warehouses.find(
+                    (warehouse) => doc.kind !== 'SALE' || warehouse.type === 'PHYSICAL',
+                  )?.id,
+                )}
+              >
+                <option value="">{t('请选择仓库')}</option>
+                {boot.warehouses
+                  .filter((w) => doc.kind !== 'SALE' || w.type === 'PHYSICAL')
+                  .map((w) => (
                   <option key={w.id} value={w.id}>
                     {text(w.name)}
                   </option>
-                ))}
+                  ))}
               </select>
             </label>
-            <p className="hint">填写本次数量，0 表示跳过。退回必须选择原收发货仓库。</p>
+            <label>
+              {t('业务日期')}
+              <input
+                name="date"
+                type="date"
+                required
+                defaultValue={new Date().toISOString().slice(0, 10)}
+              />
+              <small>{t('将作为发货单 / 收货单日期。')}</small>
+            </label>
+            <p className="hint">{t('填写本次数量，0 表示跳过。退回必须选择原收发货仓库。')}</p>
             {items.map((l) => {
               const available =
                 mode === 'return' ? Number(l.fulfilled) : Number(l.quantity) - Number(l.fulfilled);
@@ -525,7 +564,7 @@ function OperationDialog({
                 <label key={l.id}>
                   {l.description}
                   <input
-                    aria-label={l.description + ' 本次数量'}
+                    aria-label={l.description + t(' 本次数量')}
                     name={l.id}
                     type="number"
                     step="0.0001"
@@ -534,24 +573,24 @@ function OperationDialog({
                     defaultValue={mode === 'return' ? '0' : available}
                   />
                   <small>
-                    {mode === 'return' ? '累计可退' : '尚未履约'}：{available}
+                    {mode === 'return' ? t('累计可退') : t('尚未履约')}：{available}
                   </small>
                 </label>
               );
             })}
             <label>
-              备注
+              {t('备注')}
               <textarea name="note" maxLength={1000} />
             </label>
           </>
         )}
-        <ErrorMessage error={error} />
+        <ErrorMessage error={t(error)} />
         <div className="form-actions">
           <button type="button" onClick={close} disabled={busy}>
-            取消
+            {t('取消')}
           </button>
           <button className="primary" disabled={busy}>
-            {busy ? '处理中…' : '确认'}
+            {busy ? t('处理中…') : t('确认')}
           </button>
         </div>
       </form>

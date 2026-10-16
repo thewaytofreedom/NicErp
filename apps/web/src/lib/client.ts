@@ -57,6 +57,10 @@ export const labels: Record<string, string> = {
   inventory: '库存',
   company: '公司资料',
   companies: '公司',
+  'exchange-rates': '汇率管理',
+  shipments: '销售发货单',
+  receipts: '采购收货单',
+  'pending-shipments': '待发货订单',
 
   ADMIN: '管理员',
   MANAGER: '业务经理',
@@ -103,10 +107,12 @@ export const labels: Record<string, string> = {
   RECEIPT: '采购收货',
   SHIPMENT_RETURN: '销售退回',
   RECEIPT_RETURN: '采购退回',
+  PHYSICAL: '实体仓库',
+  VIRTUAL: '虚拟仓库',
 };
 export function can(role: string, area: string) {
   const grants: Record<string, string[]> = {
-    catalog: ['MANAGER', 'SALES', 'PURCHASING'],
+    catalog: ['MANAGER', 'PURCHASING'],
     partners: ['MANAGER', 'SALES', 'PURCHASING'],
     sales: ['MANAGER', 'SALES'],
     purchasing: ['MANAGER', 'PURCHASING'],
@@ -118,14 +124,20 @@ export function can(role: string, area: string) {
   return role === 'ADMIN' || !!grants[area]?.includes(role);
 }
 export const areaFor = (kind: string) =>
-  ['INVOICE', 'BILL'].includes(kind) ? 'finance' : kind === 'PURCHASE' ? 'purchasing' : 'sales';
+  kind === 'BILL' ? 'finance' : kind === 'PURCHASE' ? 'purchasing' : 'sales';
 export type Row = Record<string, unknown> & { id: string };
 export interface Product extends Row {
   sku: string;
   name: string;
   type: string;
+  countryOfOrigin: string;
   salePrice: string;
-  costPrice: string;
+  costPrice?: string;
+  weight: string;
+  length: string;
+  width: string;
+  height: string;
+  moq: string;
   taxRate: string;
   relatedNumbers: string[];
   components: { productId: string; quantity: string }[];
@@ -141,6 +153,7 @@ export interface Bootstrap {
   warehouses: Row[];
   accounts: Row[];
   lookups: Row[];
+  exchangeRates: Row[];
   role: string;
 }
 export interface DocLine {

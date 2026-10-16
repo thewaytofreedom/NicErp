@@ -8,7 +8,7 @@ import { randomBytes, createHash, scrypt as scryptCallback, timingSafeEqual } fr
 import { promisify } from 'node:util';
 import { PrismaService } from '../database/prisma.service.js';
 import { atomic } from '../database/transaction.js';
-import { object, str, email, password, currency } from '../common/input.js';
+import { object, str, email, password, currency, choice } from '../common/input.js';
 import type { Context } from '../common/context.js';
 const scrypt = promisify(scryptCallback);
 export const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex');
@@ -113,9 +113,23 @@ export class AuthService {
   async me(c: Context) {
     const user = await this.db.user.findUniqueOrThrow({
       where: { id: c.userId },
-      select: { id: true, name: true, email: true, memberships: { include: { company: true } } },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        locale: true,
+        memberships: { include: { company: true } },
+      },
     });
     return { ...user, companyId: c.companyId, role: c.role };
+  }
+  async preferences(c: Context, raw: unknown) {
+    const locale = choice(object(raw), 'locale', ['zh-CN', 'en']);
+    return this.db.user.update({
+      where: { id: c.userId },
+      data: { locale },
+      select: { locale: true },
+    });
   }
   async logout(c: Context) {
     await this.db.session.deleteMany({ where: { id: c.sessionId } });

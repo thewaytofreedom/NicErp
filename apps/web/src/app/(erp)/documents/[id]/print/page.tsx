@@ -1,9 +1,20 @@
+import { serverLanguage } from '@/lib/i18n-server';
+import { formatMoney } from '@/lib/i18n';
 import { backend } from '@/lib/api';
-import { labels, money, price, type Document } from '@/lib/client';
+import { labels, type Document } from '@/lib/client';
 import { notFound } from 'next/navigation';
 import PrintButton from '@/components/print-button';
 import { printableLines } from '@/lib/document-lines';
-export default async function Page({ params }: { params: Promise<{ id: string }> }) {
+export default async function Page({
+  params,
+}: {
+  params: Promise<{
+    id: string;
+  }>;
+}) {
+  const { t, locale } = await serverLanguage();
+  const money = (value: unknown) => formatMoney(value, locale);
+  const price = (value: unknown) => formatMoney(value, locale, 4);
   const { id } = await params;
   const [r, b] = await Promise.all([
     backend(`erp/documents/${encodeURIComponent(id)}`),
@@ -24,9 +35,9 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             <p>{company.taxNumber}</p>
           </div>
           <div>
-            <h2>{labels[doc.kind]}</h2>
+            <h2>{t(labels[doc.kind])}</h2>
             <p>{doc.number}</p>
-            <strong>{labels[doc.status]}</strong>
+            <strong>{t(labels[doc.status])}</strong>
           </div>
         </div>
         <section className="document-info">
@@ -36,30 +47,70 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             <p>{doc.partnerSnapshot.taxNumber}</p>
           </div>
           <div>
-            <p>日期：{doc.date.slice(0, 10)}</p>
-            <p>到期日：{doc.dueDate?.slice(0, 10) || '—'}</p>
-            <p>币种：{doc.currency}</p>
             <p>
-              贸易术语：{doc.incoterm || '—'} {doc.incotermLocation}
+              {t('日期：')}
+              {doc.date.slice(0, 10)}
             </p>
-            {doc.customerReference && <p>参考号：{doc.customerReference}</p>}
-            {doc.validUntil && <p>报价有效期：{doc.validUntil.slice(0, 10)}</p>}
-            {doc.deliveryDate && <p>交货日期：{doc.deliveryDate.slice(0, 10)}</p>}
-            {doc.paymentTerms && <p>付款条件：{doc.paymentTerms}</p>}
-            {doc.paymentMethod && <p>付款方式：{doc.paymentMethod}</p>}
-            {doc.shippingMethod && <p>配送方式：{doc.shippingMethod}</p>}
+            <p>
+              {t('到期日：')}
+              {doc.dueDate?.slice(0, 10) || '—'}
+            </p>
+            <p>
+              {t('币种：')}
+              {doc.currency}
+            </p>
+            <p>
+              {t('贸易术语：')}
+              {doc.incoterm || '—'} {doc.incotermLocation}
+            </p>
+            {doc.customerReference && (
+              <p>
+                {t('参考号：')}
+                {doc.customerReference}
+              </p>
+            )}
+            {doc.validUntil && (
+              <p>
+                {t('报价有效期：')}
+                {doc.validUntil.slice(0, 10)}
+              </p>
+            )}
+            {doc.deliveryDate && (
+              <p>
+                {t('交货日期：')}
+                {doc.deliveryDate.slice(0, 10)}
+              </p>
+            )}
+            {doc.paymentTerms && (
+              <p>
+                {t('付款条件：')}
+                {doc.paymentTerms}
+              </p>
+            )}
+            {doc.paymentMethod && (
+              <p>
+                {t('付款方式：')}
+                {doc.paymentMethod}
+              </p>
+            )}
+            {doc.shippingMethod && (
+              <p>
+                {t('配送方式：')}
+                {doc.shippingMethod}
+              </p>
+            )}
           </div>
         </section>
         <table>
           <thead>
             <tr>
-              {doc.kind === 'QUOTE' && <th>序号</th>}
-              <th>描述</th>
-              <th>数量</th>
-              <th>单价</th>
-              <th>折扣%</th>
-              <th>税率%</th>
-              <th>金额</th>
+              {doc.kind === 'QUOTE' && <th>{t('序号')}</th>}
+              <th>{t('描述')}</th>
+              <th>{t('数量')}</th>
+              <th>{t('单价')}</th>
+              <th>{t('折扣%')}</th>
+              <th>{t('税率%')}</th>
+              <th>{t('金额')}</th>
             </tr>
           </thead>
           <tbody>
@@ -84,21 +135,24 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
         </table>
         <div className="document-summary">
           <div>
-            <p>整单折扣：{doc.discountRate}%</p>
+            <p>
+              {t('整单折扣：')}
+              {doc.discountRate}%
+            </p>
             <p className="preserve">{doc.notes}</p>
           </div>
           <dl>
-            <dt>未税金额</dt>
+            <dt>{t('未税金额')}</dt>
             <dd>{money(doc.subtotal)}</dd>
-            <dt>税额</dt>
+            <dt>{t('税额')}</dt>
             <dd>{money(doc.taxTotal)}</dd>
-            <dt>合计</dt>
+            <dt>{t('合计')}</dt>
             <dd>
               <strong>
                 {doc.currency} {money(doc.total)}
               </strong>
             </dd>
-            <dt>已付</dt>
+            <dt>{t('已付')}</dt>
             <dd>{money(doc.paidAmount)}</dd>
           </dl>
         </div>

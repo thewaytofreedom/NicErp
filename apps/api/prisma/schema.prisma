@@ -51,7 +51,20 @@ model Company {
   bankOperations BankOperation[]
   counters Counter[]
   operations StockOperation[]
+  exchangeRates ExchangeRate[]
   @@map("companies")
+}
+model ExchangeRate {
+  id String @id @default(uuid()) @db.Uuid
+  companyId String @db.Uuid
+  currency String @db.VarChar(3)
+  rate Decimal @db.Decimal(18,6)
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  company Company @relation(fields:[companyId],references:[id])
+  @@unique([companyId,currency])
+  @@map("exchange_rates")
 }
 model User {
   id String @id @default(uuid()) @db.Uuid
@@ -59,6 +72,7 @@ model User {
   name String
   passwordHash String
   active Boolean @default(true)
+  locale String @default("zh-CN")
   createdAt DateTime @default(now())
   memberships Membership[]
   sessions Session[]
@@ -102,11 +116,17 @@ model Product {
   seriesId String?
   relatedNumbers String[] @default([])
   model String @default("")
+  countryOfOrigin String @default("")
   sourceTag String @default("")
   saleEnabled Boolean @default(true)
   purchaseEnabled Boolean @default(true)
   salePrice Decimal @default(0) @db.Decimal(18,4)
   costPrice Decimal @default(0) @db.Decimal(18,4)
+  weight Decimal @default(0) @db.Decimal(18,4)
+  length Decimal @default(0) @db.Decimal(18,2)
+  width Decimal @default(0) @db.Decimal(18,2)
+  height Decimal @default(0) @db.Decimal(18,2)
+  moq Decimal @default(1) @db.Decimal(18,4)
   taxRate Decimal @default(0) @db.Decimal(7,4)
   description String @default("")
   imageUrls String[] @default([])
@@ -137,6 +157,7 @@ model ProductComponent {
 model Partner {
   id String @id @default(uuid()) @db.Uuid
   companyId String @db.Uuid
+  createdById String? @db.Uuid
   code String
   name String
   type String @default("CUSTOMER")
@@ -152,6 +173,7 @@ model Partner {
   contacts Contact[]
   supplierPrices SupplierPrice[]
   @@unique([companyId,code])
+  @@index([companyId,createdById])
   @@map("partners")
 }
 model Contact {
@@ -194,10 +216,12 @@ model Warehouse {
   code String
   name String
   address String @default("")
+  type String @default("PHYSICAL")
   active Boolean @default(true)
   company Company @relation(fields:[companyId],references:[id])
   stocks StockBalance[]
   operations StockOperation[]
+  movements StockMovement[]
   @@unique([companyId,code])
   @@map("warehouses")
 }
@@ -215,6 +239,8 @@ model StockOperation {
   companyId String @db.Uuid
   warehouseId String @db.Uuid
   documentId String? @db.Uuid
+  number String @default("")
+  date DateTime @default(now()) @db.Date
   requestKey String
   fingerprint String
   lineQuantities Json
@@ -231,10 +257,12 @@ model StockOperation {
 model StockMovement {
   id String @id @default(uuid()) @db.Uuid
   operationId String @db.Uuid
+  warehouseId String? @db.Uuid
   productId String @db.Uuid
   quantity Decimal @db.Decimal(18,4)
   balanceAfter Decimal @db.Decimal(18,4)
   operation StockOperation @relation(fields:[operationId],references:[id])
+  warehouse Warehouse? @relation(fields:[warehouseId],references:[id])
   product Product @relation(fields:[productId],references:[id])
   @@map("stock_movements")
 }
@@ -350,6 +378,7 @@ model BankEntry {
   id String @id @default(uuid()) @db.Uuid
   operationId String @db.Uuid
   accountId String @db.Uuid
+  paymentId String? @unique @db.Uuid
   amount Decimal @db.Decimal(18,2)
   date DateTime @db.Date
   reference String @default("")
@@ -359,6 +388,7 @@ model BankEntry {
   reconciledAt DateTime?
   operation BankOperation @relation(fields:[operationId],references:[id])
   account BankAccount @relation(fields:[accountId],references:[id])
+  payment Payment? @relation(fields:[paymentId],references:[id],onDelete:SetNull)
   @@index([accountId,date])
   @@map("bank_entries")
 }
@@ -378,6 +408,7 @@ model Payment {
   createdAt DateTime @default(now())
   document Document @relation(fields:[documentId],references:[id])
   account BankAccount @relation(fields:[accountId],references:[id])
+  bankEntry BankEntry?
   @@map("payments")
 }
 model Post {

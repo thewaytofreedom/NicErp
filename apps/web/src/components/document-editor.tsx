@@ -1,11 +1,11 @@
 'use client';
+import { useLanguage } from '@/components/locale-provider';
 import { useState, type SetStateAction } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   request,
   labels,
-  money,
   type Bootstrap,
   type Document,
   type DocLine,
@@ -34,6 +34,7 @@ export default function DocumentEditor({
   kind: string;
   document?: Document;
 }) {
+  const { t, money } = useLanguage();
   const router = useRouter(),
     [lines, setStoredLines] = useState<DocLine[]>(() =>
       kind === 'QUOTE'
@@ -47,6 +48,7 @@ export default function DocumentEditor({
     [preference, setPreference] = useState('UNIQUE'),
     [warnings, setWarnings] = useState<string[]>([]),
     [selected, setSelected] = useState<number[]>([]),
+    [lineFilter, setLineFilter] = useState(''),
     [batchPercent, setBatchPercent] = useState('0'),
     [busy, setBusy] = useState(false);
   function setLines(next: SetStateAction<DocLine[]>) {
@@ -60,9 +62,9 @@ export default function DocumentEditor({
     const position = Number(value) - 1;
     const message =
       !/^[1-9]\d*$/.test(value) || position > 999999
-        ? '序号必须为 1 至 1000000 的整数'
+        ? t('序号必须为 1 至 1000000 的整数')
         : lines.some((line, n) => n !== index && line.position === position)
-          ? `序号 ${value} 已存在，请使用不同的序号`
+          ? t('序号 {0} 已存在，请使用不同的序号', { '0': value })
           : '';
     input.setCustomValidity(message);
     if (message) {
@@ -77,11 +79,28 @@ export default function DocumentEditor({
   function update(index: number, key: string, value: string) {
     setLines(lines.map((l, i) => (i === index ? { ...l, [key]: value } : l)));
   }
+  function changeRate(next: string) {
+    const oldRate = Number(rate) || 1,
+      newRate = Number(next) || 1;
+    setRate(next);
+    if (oldRate !== newRate && oldRate > 0 && newRate > 0) {
+      const factor = oldRate / newRate;
+      setLines((current) =>
+        current.map((l) =>
+          l.kind === 'ITEM'
+            ? { ...l, unitPrice: ((Number(l.unitPrice) || 0) * factor).toFixed(4) }
+            : l,
+        ),
+      );
+    }
+  }
   async function batch(mode: string) {
     setError('');
     setBusy(true);
     try {
-      const result = await request<{ lines: DocLine[] }>('erp/documents/transform-lines', 'POST', {
+      const result = await request<{
+        lines: DocLine[];
+      }>('erp/documents/transform-lines', 'POST', {
         kind,
         mode,
         percent: batchPercent,
@@ -101,24 +120,23 @@ export default function DocumentEditor({
     setError('');
     setBusy(true);
     try {
-      const result = await request<{ unitPrice: string; source: string }>(
-        'erp/documents/purchase-price',
-        'POST',
-        {
-          kind,
-          productId: lines[index].productId,
-          partnerId: new FormData(form).get('partnerId'),
-          quantity: lines[index].quantity,
-          date: new FormData(form).get('date'),
-          currency: cur,
-          exchangeRate: rate,
-        },
-      );
+      const result = await request<{
+        unitPrice: string;
+        source: string;
+      }>('erp/documents/purchase-price', 'POST', {
+        kind,
+        productId: lines[index].productId,
+        partnerId: new FormData(form).get('partnerId'),
+        quantity: lines[index].quantity,
+        date: new FormData(form).get('date'),
+        currency: cur,
+        exchangeRate: rate,
+      });
       setLines(lines.map((l, i) => (i === index ? { ...l, unitPrice: result.unitPrice } : l)));
       setWarnings([
         result.source === 'SUPPLIER'
-          ? '已按供应商有效报价、数量价阶及折扣填入单价'
-          : '没有适用的供应商报价，使用产品参考成本',
+          ? t('已按供应商有效报价、数量价阶及折扣填入单价')
+          : t('没有适用的供应商报价，使用产品参考成本'),
       ]);
     } catch (e) {
       setError((e as Error).message);
@@ -192,43 +210,41 @@ export default function DocumentEditor({
     setError('');
     try {
       if (lines.some((l) => l.kind === 'ITEM' && !l.productId && !l.freeText))
-        throw Error('请先匹配每行的产品编号或替代号');
-      const result = await request<{ id: string }>(
-        `erp/documents${document ? '/' + document.id : ''}`,
-        document ? 'PATCH' : 'POST',
-        {
-          ...Object.fromEntries(new FormData(e.currentTarget)),
-          kind,
-          version: document?.version,
-          lines: lines.map(
-            ({
-              kind,
-              position,
-              productId,
-              freeText,
-              level,
-              hidden,
-              description,
-              quantity,
-              unitPrice,
-              discountRate,
-              taxRate,
-            }) => ({
-              kind,
-              position,
-              productId,
-              freeText,
-              level,
-              hidden,
-              description,
-              quantity,
-              unitPrice,
-              discountRate,
-              taxRate,
-            }),
-          ),
-        },
-      );
+        throw Error(t('请先匹配每行的产品编号或替代号'));
+      const result = await request<{
+        id: string;
+      }>(`erp/documents${document ? '/' + document.id : ''}`, document ? 'PATCH' : 'POST', {
+        ...Object.fromEntries(new FormData(e.currentTarget)),
+        kind,
+        version: document?.version,
+        lines: lines.map(
+          ({
+            kind,
+            position,
+            productId,
+            freeText,
+            level,
+            hidden,
+            description,
+            quantity,
+            unitPrice,
+            discountRate,
+            taxRate,
+          }) => ({
+            kind,
+            position,
+            productId,
+            freeText,
+            level,
+            hidden,
+            description,
+            quantity,
+            unitPrice,
+            discountRate,
+            taxRate,
+          }),
+        ),
+      });
       router.push(`/documents/${result.id}`);
       router.refresh();
     } catch (e) {
@@ -238,35 +254,46 @@ export default function DocumentEditor({
   }
   async function importLines(file: File) {
     try {
-      if (file.size > 1000000) throw Error('CSV 不能超过 1MB');
+      if (file.size > 1000000) throw Error(t('CSV 不能超过 1MB'));
       const rows = parseCSV(await file.text());
-      if (rows.length < 1 || rows.length > 200) throw Error('每次导入 1–200 行');
+      if (rows.length < 1 || rows.length > 200) throw Error(t('每次导入 1–200 行'));
       const result = await request<{
         lines: DocLine[];
-        warnings: { row: number; message: string }[];
+        warnings: {
+          row: number;
+          message: string;
+        }[];
       }>('erp/documents/import-lines', 'POST', {
         kind,
         preference,
         currency: cur,
         exchangeRate: rate,
         rows: rows.map((r) => {
-          const serial = r['序号']?.trim();
+          const serial = (r['序号'] || r.Sequence)?.trim();
           if (kind === 'QUOTE' && serial && !/^[1-9]\d*$/.test(serial))
-            throw Error('CSV 序号必须为正整数');
+            throw Error(t('CSV 序号必须为正整数'));
           return {
             ...(kind === 'QUOTE' && serial ? { position: Number(serial) - 1 } : {}),
-            number: r['产品编号'] || r['替代号'] || r.Ref || '',
-            description: r['描述'] || r.Label || '',
-            quantity: r['数量'] || r.Qty || '1',
-            unitPrice: r['单价'] || r['PU ht'] || '',
-            discountRate: r['折扣率'] || '0',
-            ...(r['税率'] ? { taxRate: r['税率'] } : {}),
+            number:
+              r['产品编号'] ||
+              r['替代号'] ||
+              r['Product number'] ||
+              r['Alternative number'] ||
+              r.Ref ||
+              '',
+            description: r['描述'] || r.Description || r.Label || '',
+            quantity: r['数量'] || r.Quantity || r.Qty || '1',
+            unitPrice: r['单价'] || r['Unit price'] || r['PU ht'] || '',
+            discountRate: r['折扣率'] || r['Discount rate'] || '0',
+            ...(r['税率'] || r['Tax rate'] ? { taxRate: r['税率'] || r['Tax rate'] } : {}),
           };
         }),
       });
       setLines(result.lines);
       setSelected([]);
-      setWarnings(result.warnings.map((w) => `第 ${w.row} 行：${w.message}`));
+      setWarnings(
+        result.warnings.map((w) => t('第 {0} 行：{1}', { '0': w.row, '1': t(w.message) })),
+      );
       setError('');
     } catch (e) {
       setError((e as Error).message);
@@ -282,21 +309,44 @@ export default function DocumentEditor({
         (1 - Number(discount) / 100);
       return { net, tax: (net * Number(l.taxRate)) / 100 };
     });
+  const normalizedFilter = lineFilter.trim().toLocaleLowerCase(),
+    visibleLines = lines
+      .map((line, index) => ({ line, index }))
+      .filter(({ line, index }) =>
+        !normalizedFilter ||
+        `${index + 1} ${line.description} ${labels[line.kind] ?? line.kind}`
+          .toLocaleLowerCase()
+          .includes(normalizedFilter),
+      );
   return (
     <>
       <div className="heading">
         <div>
           <p className="eyebrow">DOCUMENT EDITOR</p>
-          <h1>{document ? `编辑 ${document.number}` : `新建${labels[kind]}`}</h1>
-          <p className="subtitle">保存为草稿，核对后确认。金额以服务器计算结果为准。</p>
+          <h1>
+            {document
+              ? t('编辑 {0}', { '0': document.number })
+              : t('新建{0}', { '0': t(labels[kind]) })}
+          </h1>
+          <p className="subtitle">{t('保存为草稿，核对后确认。金额以服务器计算结果为准。')}</p>
         </div>
       </div>
       <form onSubmit={submit}>
-        <section className="panel form-grid">
+        <details className="document-meta" open>
+          <summary>
+            <span>{t('单据信息')}</span>
+            <small>{t('点击收起或展开')}</small>
+          </summary>
+          <section className="panel form-grid">
           <label>
-            往来单位
-            <select name="partnerId" required defaultValue={document?.partnerId ?? ''}>
-              <option value="">请选择</option>
+            {t('往来单位')}
+            <select
+              aria-label={t('往来单位')}
+              name="partnerId"
+              required
+              defaultValue={document?.partnerId ?? ''}
+            >
+              <option value="">{t('请选择')}</option>
               {boot.partners
                 .filter((p) =>
                   [['PURCHASE', 'BILL'].includes(kind) ? 'SUPPLIER' : 'CUSTOMER', 'BOTH'].includes(
@@ -311,7 +361,7 @@ export default function DocumentEditor({
             </select>
           </label>
           <label>
-            单据日期
+            {t('单据日期')}
             <input
               name="date"
               type="date"
@@ -320,7 +370,7 @@ export default function DocumentEditor({
             />
           </label>
           <label>
-            到期日期
+            {t('到期日期')}
             <input
               name="dueDate"
               type="date"
@@ -329,7 +379,7 @@ export default function DocumentEditor({
           </label>
           {kind === 'QUOTE' && (
             <label>
-              报价有效期
+              {t('报价有效期')}
               <input
                 name="validUntil"
                 type="date"
@@ -341,7 +391,7 @@ export default function DocumentEditor({
             </label>
           )}
           <label>
-            客户 / 供应商参考号
+            {t('客户 / 供应商参考号')}
             <input
               name="customerReference"
               defaultValue={document?.customerReference ?? ''}
@@ -349,7 +399,7 @@ export default function DocumentEditor({
             />
           </label>
           <label>
-            预计交货日期
+            {t('预计交货日期')}
             <input
               name="deliveryDate"
               type="date"
@@ -357,7 +407,7 @@ export default function DocumentEditor({
             />
           </label>
           <label>
-            付款条件
+            {t('付款条件')}
             <input
               name="paymentTerms"
               list="payment-term-options"
@@ -366,7 +416,7 @@ export default function DocumentEditor({
             />
           </label>
           <label>
-            付款方式
+            {t('付款方式')}
             <input
               name="paymentMethod"
               list="payment-method-options"
@@ -375,7 +425,7 @@ export default function DocumentEditor({
             />
           </label>
           <label>
-            配送方式
+            {t('配送方式')}
             <input
               name="shippingMethod"
               list="shipment-method-options"
@@ -384,20 +434,36 @@ export default function DocumentEditor({
             />
           </label>
           <label>
-            币种
+            {t('币种')}
             <input
               name="currency"
               required
               maxLength={3}
+              list="currency-options"
               value={cur}
               onChange={(e) => {
-                setCur(e.target.value.toUpperCase());
-                if (e.target.value.toUpperCase() === boot.company.currency) setRate('1');
+                const next = e.target.value.toUpperCase();
+                setCur(next);
+                const def = boot.exchangeRates.find(
+                  (r) => String(r.currency) === next && r.active,
+                );
+                if (next === boot.company.currency) changeRate('1');
+                else if (def) changeRate(String(def.rate));
               }}
             />
+            <datalist id="currency-options">
+              {[
+                boot.company.currency,
+                ...boot.exchangeRates.map((r) => String(r.currency)),
+              ]
+                .filter((v, i, a) => v && a.indexOf(v) === i)
+                .map((c) => (
+                  <option key={c} value={c} />
+                ))}
+            </datalist>
           </label>
           <label>
-            汇率
+            {t('汇率')}
             <input
               name="exchangeRate"
               type="number"
@@ -405,14 +471,17 @@ export default function DocumentEditor({
               step="0.000001"
               required
               value={rate}
-              onChange={(e) => setRate(e.target.value)}
+              onChange={(e) => changeRate(e.target.value)}
             />
             <small>
-              1 {cur} = 此数值 {boot.company.currency}；修改汇率不会改写已填单价。
+              1 {cur}
+              {t('= 此数值')}
+              {boot.company.currency}
+              {t('；修改汇率会按比例调整已填单价。')}
             </small>
           </label>
           <label>
-            整单折扣 %
+            {t('整单折扣 %')}
             <input
               name="discountRate"
               type="number"
@@ -425,18 +494,18 @@ export default function DocumentEditor({
             />
           </label>
           <label>
-            贸易术语
+            {t('贸易术语')}
             <input
               name="incoterm"
               list="incoterm-options"
               defaultValue={document?.incoterm ?? ''}
-              placeholder="例如 EXW、FOB Singapore"
+              placeholder={t('例如 EXW、FOB Singapore')}
               maxLength={100}
             />
             <datalist id="incoterm-options">
               {incoterms.map(([code, label]) => (
                 <option key={code} value={code}>
-                  {label}
+                  {t(label)}
                 </option>
               ))}
               {boot.lookups
@@ -447,11 +516,11 @@ export default function DocumentEditor({
             </datalist>
           </label>
           <label>
-            备注
+            {t('备注')}
             <textarea name="notes" defaultValue={document?.notes ?? ''} />
           </label>
           <label>
-            贸易术语交付地点
+            {t('贸易术语交付地点')}
             <input
               name="incotermLocation"
               defaultValue={document?.incotermLocation ?? ''}
@@ -459,11 +528,12 @@ export default function DocumentEditor({
             />
           </label>
           <label>
-            内部备注
+            {t('内部备注')}
             <textarea name="privateNotes" defaultValue={document?.privateNotes ?? ''} />
-            <small>仅后台显示，不打印</small>
+            <small>{t('仅后台显示，不打印')}</small>
           </label>
-        </section>
+          </section>
+        </details>
         <div className="section-heading">
           {(['PAYMENT_TERM', 'PAYMENT_METHOD', 'SHIPMENT_METHOD'] as const).map((type, index) => (
             <datalist
@@ -479,48 +549,48 @@ export default function DocumentEditor({
                 ))}
             </datalist>
           ))}
-          <h2>单据明细</h2>
+          <h2>{t('单据明细')}</h2>
           <div className="toolbar-actions">
             <select
-              aria-label="明细导入匹配偏好"
+              aria-label={t('明细导入匹配偏好')}
               value={preference}
               onChange={(e) => setPreference(e.target.value)}
             >
-              <option value="UNIQUE">唯一编号 / 替代号匹配</option>
+              <option value="UNIQUE">{t('唯一编号 / 替代号匹配')}</option>
               {kind === 'QUOTE' && (
                 <>
-                  <option value="1">任意货源：原厂 / 进口</option>
-                  <option value="2">任意货源：原厂缺货时允许 WD</option>
-                  <option value="3">中国货源：原厂 / 进口</option>
-                  <option value="4">中国货源：原厂缺货时允许 WD</option>
-                  <option value="5">SN / 海外货源</option>
-                  <option value="6">中国货源：WD 替代件</option>
+                  <option value="1">{t('任意货源：原厂 / 进口')}</option>
+                  <option value="2">{t('任意货源：原厂缺货时允许 WD')}</option>
+                  <option value="3">{t('中国货源：原厂 / 进口')}</option>
+                  <option value="4">{t('中国货源：原厂缺货时允许 WD')}</option>
+                  <option value="5">{t('SN / 海外货源')}</option>
+                  <option value="6">{t('中国货源：WD 替代件')}</option>
                 </>
               )}
-              <option value="7">直接产品编号</option>
+              <option value="7">{t('直接产品编号')}</option>
             </select>
             <button
               type="button"
               onClick={() =>
                 downloadCSV(
-                  '单据明细模板.csv',
+                  t('单据明细模板.csv'),
                   [
-                    ...(kind === 'QUOTE' ? ['序号'] : []),
-                    '产品编号',
-                    '描述',
-                    '数量',
-                    '单价',
-                    '折扣率',
-                    '税率',
+                    ...(kind === 'QUOTE' ? [t('序号')] : []),
+                    t('产品编号'),
+                    t('描述'),
+                    t('数量'),
+                    t('单价'),
+                    t('折扣率'),
+                    t('税率'),
                   ],
                   [],
                 )
               }
             >
-              CSV 模板
+              {t('CSV 模板')}
             </button>
             <label className="button">
-              导入明细
+              {t('导入明细')}
               <input
                 type="file"
                 accept=".csv"
@@ -541,20 +611,32 @@ export default function DocumentEditor({
             ))}
           </div>
         )}
-        <div className="toolbar">
+        <div className="toolbar line-toolbar">
           <div className="toolbar-actions">
+            <input
+              className="line-filter"
+              type="search"
+              value={lineFilter}
+              onChange={(e) => setLineFilter(e.target.value)}
+              placeholder={t('筛选明细、产品编号或描述')}
+              aria-label={t('筛选单据明细')}
+            />
+            <span className="line-count">
+              {t('显示 {0} / {1} 行', { '0': visibleLines.length, '1': lines.length })}
+            </span>
             <button
               type="button"
-              onClick={() =>
-                setSelected(selected.length === lines.length ? [] : lines.map((_, i) => i))
-              }
+              onClick={() => {
+                const indexes = visibleLines.map(({ index }) => index);
+                setSelected(indexes.every((index) => selected.includes(index)) ? selected.filter((index) => !indexes.includes(index)) : [...new Set([...selected, ...indexes])]);
+              }}
             >
-              全选 / 取消
+              {t('选择当前结果')}
             </button>
             <label>
-              批量百分比
+              {t('批量百分比')}
               <input
-                aria-label="批量百分比"
+                aria-label={t('批量百分比')}
                 type="number"
                 min="0"
                 max="100"
@@ -568,45 +650,45 @@ export default function DocumentEditor({
               disabled={busy || !selected.length}
               onClick={() => void batch('DISCOUNT')}
             >
-              设置选中行折扣
+              {t('设置选中行折扣')}
             </button>
             <button
               type="button"
               disabled={busy || !selected.length}
               onClick={() => void batch('PRICE')}
             >
-              降低选中行单价
+              {t('降低选中行单价')}
             </button>
             <button
               type="button"
               disabled={busy || !selected.length}
               onClick={() => void batch('DELETE')}
             >
-              删除选中行
+              {t('删除选中行')}
             </button>
           </div>
         </div>
-        <div className="table-wrap">
+        <div className="table-wrap line-editor-wrap">
           <table className="line-editor">
             <thead>
               <tr>
-                {kind === 'QUOTE' && <th>序号</th>}
-                <th>类型 / 产品</th>
-                <th>描述</th>
-                <th>数量</th>
-                <th>单价</th>
-                <th>行折扣 %</th>
-                <th>税率 %</th>
-                <th>操作</th>
+                {kind === 'QUOTE' && <th>{t('序号')}</th>}
+                <th>{t('类型 / 产品')}</th>
+                <th>{t('描述')}</th>
+                <th>{t('数量')}</th>
+                <th>{t('单价')}</th>
+                <th>{t('行折扣 %')}</th>
+                <th>{t('税率 %')}</th>
+                <th>{t('操作')}</th>
               </tr>
             </thead>
             <tbody>
-              {lines.map((l, i) => (
+              {visibleLines.map(({ line: l, index: i }) => (
                 <tr key={kind === 'QUOTE' ? l.position : i}>
                   {kind === 'QUOTE' && (
                     <td className="line-sequence">
                       <input
-                        aria-label={`第 ${i + 1} 行序号`}
+                        aria-label={t('第 {0} 行序号', { '0': i + 1 })}
                         type="number"
                         min="1"
                         max="1000000"
@@ -627,9 +709,9 @@ export default function DocumentEditor({
                   <td className="line-product">
                     {['TITLE', 'SUBTOTAL'].includes(l.kind) && (
                       <label>
-                        层级
+                        {t('层级')}
                         <input
-                          aria-label={`第 ${i + 1} 行层级`}
+                          aria-label={t('第 {0} 行层级', { '0': i + 1 })}
                           type="number"
                           min="1"
                           max="9"
@@ -658,26 +740,26 @@ export default function DocumentEditor({
                             )
                           }
                         />
-                        打印折叠明细
+                        {t('打印折叠明细')}
                       </label>
                     )}
                     {l.kind === 'ITEM' && !l.freeText ? (
                       <ProductMatch
                         key={l.productId || 'unmatched'}
-                        label={`第 ${i + 1} 行产品`}
+                        label={t('第 {0} 行产品', { '0': i + 1 })}
                         usage={['PURCHASE', 'BILL'].includes(kind) ? 'purchase' : 'sale'}
                         selected={l.productId ? l.description : ''}
                         onSelect={(p) => product(i, p)}
                       />
                     ) : l.freeText ? (
-                      '自由明细（不影响库存）'
+                      t('自由明细（不影响库存）')
                     ) : (
-                      labels[l.kind]
+                      t(labels[l.kind])
                     )}
                   </td>
                   <td className="line-description">
                     <input
-                      aria-label={`第 ${i + 1} 行描述`}
+                      aria-label={t('第 {0} 行描述', { '0': i + 1 })}
                       value={l.description}
                       onChange={(e) => update(i, 'description', e.target.value)}
                       maxLength={2000}
@@ -687,7 +769,7 @@ export default function DocumentEditor({
                     <td key={k}>
                       {l.kind === 'ITEM' && (
                         <input
-                          aria-label={`第 ${i + 1} 行 ${k}`}
+                          aria-label={t('第 {0} 行 {1}', { '0': i + 1, '1': k })}
                           type="number"
                           min={k === 'quantity' ? '0.0001' : '0'}
                           max={k.endsWith('Rate') ? '100' : undefined}
@@ -702,7 +784,7 @@ export default function DocumentEditor({
                   <td>
                     <input
                       type="checkbox"
-                      aria-label={`选择第 ${i + 1} 行`}
+                      aria-label={t('选择第 {0} 行', { '0': i + 1 })}
                       checked={selected.includes(i)}
                       onChange={(e) =>
                         setSelected(
@@ -711,20 +793,20 @@ export default function DocumentEditor({
                       }
                     />
                     <button type="button" onClick={() => block(i, 'UP')}>
-                      上移
+                      {t('上移')}
                     </button>
                     <button type="button" onClick={() => block(i, 'DOWN')}>
-                      下移
+                      {t('下移')}
                     </button>
                     <button type="button" onClick={() => block(i, 'COPY')}>
-                      复制
+                      {t('复制')}
                     </button>
                     <button
                       type="button"
-                      aria-label={`移除第 ${i + 1} 行`}
+                      aria-label={t('移除第 {0} 行', { '0': i + 1 })}
                       onClick={() => block(i, 'DELETE')}
                     >
-                      移除
+                      {t('移除')}
                     </button>
                     {['PURCHASE', 'BILL'].includes(kind) && l.productId && (
                       <button
@@ -732,7 +814,7 @@ export default function DocumentEditor({
                         disabled={busy}
                         onClick={(e) => void supplierPrice(i, e.currentTarget.form)}
                       >
-                        取供应商报价
+                        {t('取供应商报价')}
                       </button>
                     )}
                   </td>
@@ -741,57 +823,57 @@ export default function DocumentEditor({
             </tbody>
           </table>
         </div>
-        <div className="toolbar">
+        <div className="toolbar line-add-toolbar">
           <div className="toolbar-actions">
-            <button type="button" onClick={() => setLines([...lines, blank()])}>
-              ＋ 产品明细
+            <button type="button" onClick={() => { setLineFilter(''); setLines([...lines, blank()]); }}>
+              {t('＋ 产品明细')}
             </button>
             <button
               type="button"
               onClick={() =>
                 setLines([
                   ...lines,
-                  { ...blank(), kind: 'TITLE', level: 1, description: '分组标题' },
+                  { ...blank(), kind: 'TITLE', level: 1, description: t('分组标题') },
                 ])
               }
             >
-              ＋ 分组标题
+              {t('＋ 分组标题')}
             </button>
             <button
               type="button"
               onClick={() => setLines([...lines, { ...blank(), productId: null, freeText: true }])}
             >
-              ＋ 自由明细
+              {t('＋ 自由明细')}
             </button>
             <button
               type="button"
               onClick={() => setLines([...lines, { ...blank(), kind: 'NOTE', description: '' }])}
             >
-              ＋ 备注行
+              {t('＋ 备注行')}
             </button>
             <button
               type="button"
               onClick={() =>
-                setLines([...lines, { ...blank(), kind: 'SUBTOTAL', description: '小计' }])
+                setLines([...lines, { ...blank(), kind: 'SUBTOTAL', description: t('小计') }])
               }
             >
-              ＋ 小计行
+              {t('＋ 小计行')}
             </button>
           </div>
           <span>
-            预估含税总额：
+            {t('预估含税总额：')}
             <strong>
               {cur} {money(estimates.reduce((n, l) => n + l.net + l.tax, 0))}
             </strong>
           </span>
         </div>
-        <ErrorMessage error={error} />
-        <div className="form-actions">
+        <ErrorMessage error={t(error)} />
+        <div className="form-actions document-save-bar">
           <Link className="button" href={document ? `/documents/${document.id}` : '/'}>
-            取消
+            {t('取消')}
           </Link>
           <button className="primary" disabled={busy}>
-            {busy ? '保存中…' : '保存草稿'}
+            {busy ? t('保存中…') : t('保存草稿')}
           </button>
         </div>
       </form>

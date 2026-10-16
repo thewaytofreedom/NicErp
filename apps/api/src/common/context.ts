@@ -12,9 +12,9 @@ export interface AppRequest {
   ip: string;
   auth: Context;
 }
-export function permit(c: Context, area: string) {
+export function canAccess(c: Context, area: string) {
   const permissions: Record<string, string[]> = {
-    catalog: ['MANAGER', 'SALES', 'PURCHASING'],
+    catalog: ['MANAGER', 'PURCHASING'],
     partners: ['MANAGER', 'SALES', 'PURCHASING'],
     sales: ['MANAGER', 'SALES'],
     purchasing: ['MANAGER', 'PURCHASING'],
@@ -23,7 +23,10 @@ export function permit(c: Context, area: string) {
     content: ['MANAGER'],
     settings: [],
   };
-  if (c.role !== 'ADMIN' && !permissions[area]?.includes(c.role))
+  return c.role === 'ADMIN' || !!permissions[area]?.includes(c.role);
+}
+export function permit(c: Context, area: string) {
+  if (!canAccess(c, area))
     throw new ForbiddenException('当前角色没有此操作权限');
 }
 export function documentArea(kind: string) {

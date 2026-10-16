@@ -473,6 +473,15 @@ try {
   );
   const { runQuoteSequence } = await import('./test-quote-sequence.mjs');
   await runQuoteSequence({ call, companyB, customer, today, viewerToken: viewer.token, pass });
+  const { runLanguage } = await import('./test-language.mjs');
+  await runLanguage({
+    call,
+    companyB,
+    viewerToken: viewer.token,
+    email: 'admin@nicerp.test',
+    password: adminPassword,
+    pass,
+  });
   fixture = {
     parity,
     apiUrl: base,

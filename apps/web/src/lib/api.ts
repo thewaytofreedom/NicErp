@@ -29,6 +29,7 @@ export interface Me {
   id: string;
   name: string;
   email: string;
+  locale: 'zh-CN' | 'en';
   companyId: string;
   role: string;
   memberships: { role: string; company: { id: string; name: string; currency: string } }[];

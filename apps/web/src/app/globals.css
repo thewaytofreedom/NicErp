@@ -765,6 +765,7 @@ td a,
   padding: 26px;
   box-shadow: 0 30px 90px #153f4433;
   color: #24454e;
+  overflow: auto;
 }
 .dialog.wide {
   width: 850px;
@@ -907,6 +908,107 @@ dd {
 .line-editor {
   min-width: 900px;
 }
+.document-meta {
+  margin-bottom: 23px;
+}
+.document-meta > summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  padding: 15px 20px;
+  background: white;
+  border: 1px solid #e1e9eb;
+  border-radius: 10px;
+  font-weight: 600;
+}
+.document-meta > summary small,
+.line-count {
+  color: #8b9ba2;
+  font-size: 11px;
+  font-weight: normal;
+}
+.document-meta[open] > summary {
+  border-radius: 10px 10px 0 0;
+  border-bottom: 0;
+}
+.document-meta .panel {
+  border-radius: 0 0 10px 10px;
+  margin-bottom: 0;
+}
+.line-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  background: #f5f8f8;
+  padding: 10px 0;
+}
+.line-filter {
+  width: min(340px, 80vw);
+}
+.line-editor-wrap {
+  max-height: min(68vh, 760px);
+  scroll-behavior: smooth;
+}
+.line-editor thead {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  box-shadow: 0 1px 0 #dfe7e9;
+}
+.line-editor tbody tr:nth-child(even) {
+  background: #fbfdfd;
+}
+.line-add-toolbar {
+  position: sticky;
+  bottom: 67px;
+  z-index: 10;
+  padding: 10px 12px;
+  background: #f5f8f8ee;
+  border: 1px solid #e1e9eb;
+  border-radius: 9px;
+  backdrop-filter: blur(8px);
+}
+.document-save-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 15;
+  padding: 13px 16px;
+  background: #fffffff2;
+  border: 1px solid #dce6e8;
+  border-radius: 10px 10px 0 0;
+  box-shadow: 0 -8px 24px #153f4414;
+  backdrop-filter: blur(8px);
+}
+.shipment-lines {
+  max-height: 48vh;
+  overflow: auto;
+  padding-right: 6px;
+  border-top: 1px solid #e5ecee;
+  border-bottom: 1px solid #e5ecee;
+}
+.shipment-lines label {
+  padding: 10px 4px;
+  margin: 0;
+  border-bottom: 1px solid #eef2f3;
+}
+.shipment-lines [hidden] {
+  display: none;
+}
+.dialog-heading {
+  position: sticky;
+  top: -26px;
+  z-index: 20;
+  background: white;
+  padding: 14px 0 10px;
+}
+.dialog .form-actions {
+  position: sticky;
+  bottom: -26px;
+  z-index: 20;
+  background: white;
+  padding: 13px 0;
+}
 .line-editor th,
 .line-editor td {
   padding: 12px 8px;
@@ -972,6 +1074,17 @@ dd {
   margin-bottom: 35px;
 }
 .print-heading p {
+  font-size: 12px;
+}
+.signature-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 40px;
+  margin-top: 45px;
+}
+.signature-grid p {
+  border-bottom: 1px solid #333;
+  padding-bottom: 34px;
   font-size: 12px;
 }
 .content-preview {

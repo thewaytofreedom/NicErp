@@ -76,6 +76,9 @@ export class ErpController {
   @Get('posts/:id') post(@Req() r: AppRequest, @Param('id') id: string) {
     return this.catalog.post(r.auth, id);
   }
+  @Get('partners/:id/profile') partnerProfile(@Req() r: AppRequest, @Param('id') id: string) {
+    return this.catalog.partnerProfile(r.auth, id);
+  }
   @Get('documents') documentsList(@Req() r: AppRequest, @Query() q: Record<string, string>) {
     return this.documents.read(r.auth, q);
   }
@@ -87,6 +90,19 @@ export class ErpController {
   }
   @Post('documents/purchase-price') purchasePrice(@Req() r: AppRequest, @Body() b: unknown) {
     return this.documents.purchasePrice(r.auth, b);
+  }
+  @Get('shipments/:id') shipment(@Req() r: AppRequest, @Param('id') id: string) {
+    return this.documents.shipmentDetail(r.auth, id);
+  }
+  @Patch('shipments/:id') updateShipment(
+    @Req() r: AppRequest,
+    @Param('id') id: string,
+    @Body() b: unknown,
+  ) {
+    return this.documents.updateShipment(r.auth, id, b);
+  }
+  @Delete('shipments/:id') deleteShipment(@Req() r: AppRequest, @Param('id') id: string) {
+    return this.documents.deleteShipment(r.auth, id);
   }
   @Get('documents/:id') document(@Req() r: AppRequest, @Param('id') id: string) {
     return this.documents.detail(r.auth, id);
@@ -142,6 +158,13 @@ export class ErpController {
   }
   @Delete('users/:id') removeUser(@Req() r: AppRequest, @Param('id') id: string) {
     return this.catalog.removeUser(r.auth, id);
+  }
+  @Patch('users/:id/password') resetUserPassword(
+    @Req() r: AppRequest,
+    @Param('id') id: string,
+    @Body() b: unknown,
+  ) {
+    return this.catalog.resetUserPassword(r.auth, id, b);
   }
   @Get(':resource') read(
     @Req() r: AppRequest,
